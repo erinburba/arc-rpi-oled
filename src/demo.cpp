@@ -1,9 +1,11 @@
 #include "arc/button.hpp"
+#include "arc/http_client.hpp"
 #include "arc/i2c_device.hpp"
 #include "arc/i2c_display_transport.hpp"
+#include "arc/json.hpp"
 #include "arc/ssd1306.hpp"
-#include "arc/websocket.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <csignal>
 #include <cstdint>
@@ -13,7 +15,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
-#include <string_view>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -27,22 +29,23 @@ struct Options {
   std::uint8_t address = 0x3D;
   std::string gpiochip = "/dev/gpiochip0";
   std::vector<std::uint32_t> buttons;
-  std::optional<arc::WebSocketConfig> websocket;
+  std::optional<arc::HttpRequest> api;
   std::string ca_file;
 };
 
 void print_usage() {
   std::cerr
       << "Usage: oled_demo [--i2c PATH] [--address ADDR] [--gpiochip PATH]\n"
-      << "                 [--buttons [A B]] [--websocket ws:// or wss:// URL] [--ca PEM]\n"
+      << "                 [--buttons [A B]] [--api http:// or https:// URL] [--ca PEM]\n"
       << "\n"
       << "Defaults: --i2c /dev/i2c-1 --address 0x3d\n"
-      << "Without --buttons or --websocket the demo draws once and exits.\n"
+      << "Without --buttons or --api the demo draws once and exits.\n"
       << "--buttons uses BCM 23 and BCM 22 unless two GPIO numbers are given.\n"
       << "Both buttons are active low with the internal pull-up.\n"
       << "A press on the first inverts the display. A press on the second toggles the block.\n"
-      << "--websocket prints each text message and inverts the display when one arrives.\n"
-      << "wss:// checks the server certificate. --ca adds a PEM trust anchor.\n"
+      << "--api polls a JSON document every 2 seconds. A changed document is printed,\n"
+      << "and the display inverts. https:// checks the server certificate.\n"
+      << "--ca adds a PEM trust anchor.\n"
       << "On Pi 5 the header is often /dev/gpiochip4.\n";
 }
 
@@ -103,22 +106,22 @@ Options parse_args(int argc, char** argv) {
         throw std::invalid_argument("--buttons expects two GPIO numbers");
       }
       options.buttons = std::move(pins);
-    } else if (arg == "--websocket") {
-      options.websocket = arc::parse_websocket_url(require("--websocket"));
+    } else if (arg == "--api") {
+      options.api = arc::parse_http_url(require("--api"));
     } else if (arg == "--ca") {
       options.ca_file = require("--ca");
     } else {
       throw std::invalid_argument("unknown argument: " + arg);
     }
   }
-  if (!options.ca_file.empty() && !options.websocket.has_value()) {
-    throw std::invalid_argument("--ca requires --websocket");
+  if (!options.ca_file.empty() && !options.api.has_value()) {
+    throw std::invalid_argument("--ca requires --api");
   }
-  if (options.websocket.has_value() && !options.buttons.empty()) {
-    throw std::invalid_argument("--websocket and --buttons cannot be used together");
+  if (options.api.has_value() && !options.buttons.empty()) {
+    throw std::invalid_argument("--api and --buttons cannot be used together");
   }
-  if (options.websocket.has_value()) {
-    options.websocket->ca_file = options.ca_file;
+  if (options.api.has_value()) {
+    options.api->ca_file = options.ca_file;
   }
   return options;
 }
@@ -152,33 +155,51 @@ int main(int argc, char** argv) {
     draw(display, show_block);
     std::cout << "Drew a border and a filled block\n";
 
-    if (options.websocket.has_value()) {
-      const arc::WebSocketConfig& endpoint = *options.websocket;
-      arc::WebSocketClient client(endpoint);
+    if (options.api.has_value()) {
+      const arc::HttpRequest& endpoint = *options.api;
+      const arc::HttpClient client(endpoint);
       std::signal(SIGINT, on_signal);
       std::signal(SIGTERM, on_signal);
-      std::cout << "Waiting for messages from " << (endpoint.tls ? "wss://" : "ws://") << endpoint.host << ":"
-                << endpoint.port << endpoint.path << " (Ctrl-C to exit)\n";
+      std::cout << "Polling " << (endpoint.tls ? "https://" : "http://") << endpoint.host << ":" << endpoint.port
+                << endpoint.target << " every 2 seconds (Ctrl-C to exit)\n";
       bool inverted = false;
-      while (g_stop == 0 && !client.closed()) {
-        const std::optional<arc::WebSocketMessage> message = client.receive(std::chrono::milliseconds(200));
-        if (!message.has_value() || g_stop != 0) {
-          continue;
+      std::string previous;
+      while (g_stop == 0) {
+        const auto started = std::chrono::steady_clock::now();
+        try {
+          const arc::HttpResponse response = client.get();
+          if (g_stop != 0) {
+            break;
+          }
+          if (response.status != 200) {
+            std::cerr << "HTTP " << response.status << "\n";
+            previous.clear();
+          } else {
+            const std::string rendered = arc::Json::parse(response.body).dump();
+            if (rendered != previous) {
+              previous = rendered;
+              std::cout << rendered << "\n";
+              std::cout.flush();
+              inverted = !inverted;
+              display.set_inverted(inverted);
+            }
+          }
+        } catch (const std::exception& ex) {
+          if (g_stop != 0) {
+            break;
+          }
+          previous.clear();
+          std::cerr << ex.what() << "\n";
         }
-        if (message->binary) {
-          std::cout << "binary message, " << message->data.size() << " bytes\n";
-        } else if (message->data.empty()) {
-          std::cout << '\n';
-        } else {
-          const std::string_view text(reinterpret_cast<const char*>(message->data.data()), message->data.size());
-          std::cout << text;
-          if (text.back() != '\n') {
-            std::cout << '\n';
+        const auto elapsed = std::chrono::steady_clock::now() - started;
+        if (elapsed < arc::kApiPollPeriod) {
+          auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(arc::kApiPollPeriod - elapsed);
+          while (g_stop == 0 && remaining.count() > 0) {
+            const auto slice = std::min(remaining, std::chrono::milliseconds(200));
+            std::this_thread::sleep_for(slice);
+            remaining -= slice;
           }
         }
-        std::cout.flush();
-        inverted = !inverted;
-        display.set_inverted(inverted);
       }
       return EXIT_SUCCESS;
     }

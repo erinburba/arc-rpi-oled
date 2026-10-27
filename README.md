@@ -39,7 +39,7 @@ The optional buttons are switches to ground. `Button` enables the internal pull-
 
 ## Build
 
-The WebSocket client links OpenSSL. On the Pi:
+HTTPS API polls link OpenSSL. On the Pi:
 
 ```bash
 sudo apt install libssl-dev
@@ -60,19 +60,17 @@ On the Pi the same commands also build `oled_demo`:
 ./build/oled_demo --buttons 23 22
 ```
 
-Without `--buttons` or `--websocket` the program draws a border and a filled block, then exits. `--buttons` waits for the two switches until Ctrl-C.
+Without `--buttons` or `--api` the program draws a border and a filled block, then exits. `--buttons` waits for the two switches until Ctrl-C.
 
-## WebSocket
+## API poll
 
-`WebSocketClient` connects to a `ws://` or `wss://` server and returns each text or binary message. Ping frames are answered with pong, and a close from the peer ends the receive loop. `wss://` checks the server certificate against the system trust store. `--ca` adds a PEM trust anchor for a private certificate.
+`HttpClient` sends one GET and returns the response body. `--api` repeats that every 2 seconds. The body has to be JSON. A changed document is printed, and the panel inverts. `https://` checks the server certificate against the system trust store. `--ca` adds a PEM trust anchor for a private certificate.
 
 ```bash
-./build/oled_demo --websocket ws://127.0.0.1:8765/oled
-./build/oled_demo --websocket wss://panel.example/oled
-./build/oled_demo --websocket wss://panel.example/oled --ca panel.pem
+./build/oled_demo --api http://127.0.0.1:8080/status
+./build/oled_demo --api https://panel.example/status
+./build/oled_demo --api https://panel.example/status --ca panel.pem
 ```
-
-Each text message is printed. The panel inverts when a message arrives, until Ctrl-C.
 
 ## Hardware check
 

@@ -11,8 +11,8 @@ find_package(OpenSSL REQUIRED)
 add_library(arc_oled
   src/ssd1306.cpp
   src/button_debounce.cpp
-  src/websocket_frame.cpp
-  src/websocket_client.cpp
+  src/json.cpp
+  src/http_client.cpp
 )
 target_include_directories(arc_oled PUBLIC include)
 target_link_libraries(arc_oled PUBLIC OpenSSL::SSL OpenSSL::Crypto)
@@ -47,7 +47,12 @@ target_link_libraries(button_test PRIVATE arc_oled)
 target_compile_options(button_test PRIVATE -Wall -Wextra -Wpedantic)
 add_test(NAME button_test COMMAND button_test)
 
-add_executable(websocket_test tests/websocket_test.cpp)
-target_link_libraries(websocket_test PRIVATE arc_oled Threads::Threads)
-target_compile_options(websocket_test PRIVATE -Wall -Wextra -Wpedantic)
-add_test(NAME websocket_test COMMAND websocket_test)
+add_executable(json_test tests/json_test.cpp)
+target_link_libraries(json_test PRIVATE arc_oled)
+target_compile_options(json_test PRIVATE -Wall -Wextra -Wpedantic)
+add_test(NAME json_test COMMAND json_test)
+
+add_executable(http_test tests/http_test.cpp)
+target_link_libraries(http_test PRIVATE arc_oled Threads::Threads)
+target_compile_options(http_test PRIVATE -Wall -Wextra -Wpedantic)
+add_test(NAME http_test COMMAND http_test)
