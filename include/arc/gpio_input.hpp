@@ -35,6 +35,7 @@ class GpioInput {
 
   bool get() const;
   std::optional<Edge> wait(std::chrono::milliseconds timeout) const;
+  int poll_fd() const;
 
  private:
   int fd_ = -1;

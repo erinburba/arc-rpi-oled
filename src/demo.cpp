@@ -10,8 +10,10 @@
 #include <iostream>
 #include <limits>
 #include <optional>
+#include <span>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -23,16 +25,18 @@ struct Options {
   std::string i2c = "/dev/i2c-1";
   std::uint8_t address = 0x3D;
   std::string gpiochip = "/dev/gpiochip0";
-  std::optional<std::uint32_t> button;
+  std::vector<std::uint32_t> buttons;
 };
 
 void print_usage() {
   std::cerr
-      << "Usage: oled_demo [--i2c PATH] [--address ADDR] [--gpiochip PATH] [--button [N]]\n"
+      << "Usage: oled_demo [--i2c PATH] [--address ADDR] [--gpiochip PATH] [--buttons [A B]]\n"
       << "\n"
       << "Defaults: --i2c /dev/i2c-1 --address 0x3d\n"
-      << "Without --button the demo draws once and exits. --button uses BCM 23 unless N is set.\n"
-      << "The button is active low with the internal pull-up. A press inverts the display.\n"
+      << "Without --buttons the demo draws once and exits.\n"
+      << "--buttons uses BCM 23 and BCM 22 unless two GPIO numbers are given.\n"
+      << "Both buttons are active low with the internal pull-up.\n"
+      << "A press on the first inverts the display. A press on the second toggles the block.\n"
       << "On Pi 5 the header is often /dev/gpiochip4.\n";
 }
 
@@ -81,12 +85,18 @@ Options parse_args(int argc, char** argv) {
       }
     } else if (arg == "--gpiochip") {
       options.gpiochip = require("--gpiochip");
-    } else if (arg == "--button") {
-      if (i + 1 < argc && argv[i + 1][0] != '-') {
-        options.button = parse_u32(argv[++i], "--button");
-      } else {
-        options.button = 23;
+    } else if (arg == "--buttons") {
+      std::vector<std::uint32_t> pins;
+      while (i + 1 < argc && argv[i + 1][0] != '-' && pins.size() < 2) {
+        pins.push_back(parse_u32(argv[++i], "--buttons"));
       }
+      if (pins.empty()) {
+        pins = {23, 22};
+      }
+      if (pins.size() != 2) {
+        throw std::invalid_argument("--buttons expects two GPIO numbers");
+      }
+      options.buttons = std::move(pins);
     } else {
       throw std::invalid_argument("unknown argument: " + arg);
     }
@@ -94,7 +104,7 @@ Options parse_args(int argc, char** argv) {
   return options;
 }
 
-void draw(arc::Ssd1306& display) {
+void draw(arc::Ssd1306& display, bool show_block) {
   display.clear();
   for (int x = 0; x < arc::Ssd1306::kWidth; ++x) {
     display.set_pixel(x, 0, true);
@@ -104,7 +114,9 @@ void draw(arc::Ssd1306& display) {
     display.set_pixel(0, y, true);
     display.set_pixel(arc::Ssd1306::kWidth - 1, y, true);
   }
-  display.fill_rect(10, 10, 20, 16, true);
+  if (show_block) {
+    display.fill_rect(10, 10, 20, 16, true);
+  }
   display.flush();
 }
 
@@ -117,25 +129,40 @@ int main(int argc, char** argv) {
     arc::I2cDisplayTransport transport(i2c);
     arc::Ssd1306 display(transport);
     display.init();
-    draw(display);
+    bool show_block = true;
+    draw(display, show_block);
     std::cout << "Drew a border and a filled block\n";
 
-    if (!options.button.has_value()) {
+    if (options.buttons.empty()) {
       return EXIT_SUCCESS;
     }
 
-    arc::Button button({options.gpiochip, *options.button});
+    std::vector<arc::Button> buttons;
+    buttons.reserve(options.buttons.size());
+    for (const std::uint32_t pin : options.buttons) {
+      buttons.emplace_back(arc::Button::Config{options.gpiochip, pin});
+    }
     std::signal(SIGINT, on_signal);
     std::signal(SIGTERM, on_signal);
-    std::cout << "Waiting for a press on GPIO " << *options.button << " (Ctrl-C to exit)\n";
+    std::cout << "Waiting for presses on GPIO " << options.buttons[0] << " and " << options.buttons[1]
+              << " (Ctrl-C to exit)\n";
     bool inverted = false;
     while (g_stop == 0) {
-      const std::optional<arc::ButtonEvent> event = button.wait(std::chrono::milliseconds(200));
-      if (event != arc::ButtonEvent::Press || g_stop != 0) {
+      const std::optional<arc::IdentifiedButtonEvent> event =
+          arc::wait_any(buttons, std::chrono::milliseconds(200));
+      if (!event.has_value() || event->event != arc::ButtonEvent::Press || g_stop != 0) {
         continue;
       }
-      inverted = !inverted;
-      display.set_inverted(inverted);
+      if (event->index == 0) {
+        inverted = !inverted;
+        display.set_inverted(inverted);
+      } else {
+        show_block = !show_block;
+        draw(display, show_block);
+        if (inverted) {
+          display.set_inverted(true);
+        }
+      }
     }
     return EXIT_SUCCESS;
   } catch (const std::invalid_argument& ex) {

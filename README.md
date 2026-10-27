@@ -29,12 +29,13 @@ Log in again after changing groups. `0x3d` in the detect grid is this panel. Som
 | CS (CE0) | 8 | 24 |
 | D/C | 24 | 18 |
 | RESET | 25 | 22 |
-| Button (optional, to GND) | 23 | 16 |
+| Button A (optional, to GND) | 23 | 16 |
+| Button B (optional, to GND) | 22 | 15 |
 | 3.3 V and GND |  | 1 or 17, and 20 |
 
 Chip select stays with the spidev driver. Wire CS to CE0. Enable it with `sudo raspi-config nonint do_spi 0` and confirm `/dev/spidev0.0` exists after reboot.
 
-The optional button is a switch to ground on BCM 23 (header pin 16). `Button` enables the internal pull-up and treats a low line as pressed. Presses and releases are separate events, accepted after 25 ms, so contact bounce does not repeat them. A press inverts the panel. On Pi 5 the header is often `/dev/gpiochip4`. The button needs the `gpio` group.
+The optional buttons are switches to ground. `Button` enables the internal pull-up on each line and treats a low line as pressed. Presses and releases are separate events, accepted after 25 ms, so contact bounce does not repeat them. A press on BCM 23 inverts the panel. A press on BCM 22 toggles the filled block. On Pi 5 the header is often `/dev/gpiochip4`. The buttons need the `gpio` group.
 
 ## Build
 
@@ -49,10 +50,11 @@ On the Pi the same commands also build `oled_demo`:
 ```bash
 ./build/oled_demo
 ./build/oled_demo --address 0x3c
-./build/oled_demo --button
+./build/oled_demo --buttons
+./build/oled_demo --buttons 23 22
 ```
 
-Without `--button` the program draws a border and a filled block, then exits. `--button` waits for a press on BCM 23 until Ctrl-C.
+Without `--buttons` the program draws a border and a filled block, then exits. `--buttons` waits for the two switches until Ctrl-C.
 
 ## Hardware check
 

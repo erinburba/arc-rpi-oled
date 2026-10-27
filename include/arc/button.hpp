@@ -3,8 +3,10 @@
 #include "arc/gpio_input.hpp"
 
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <optional>
+#include <span>
 #include <string>
 
 namespace arc {
@@ -12,6 +14,11 @@ namespace arc {
 enum class ButtonEvent {
   Press,
   Release,
+};
+
+struct IdentifiedButtonEvent {
+  std::size_t index = 0;
+  ButtonEvent event = ButtonEvent::Press;
 };
 
 // A button wired to ground is active low: the line reads low while it is held.
@@ -60,11 +67,23 @@ class Button {
   std::optional<ButtonEvent> wait(std::chrono::milliseconds timeout);
 
  private:
+  friend std::optional<IdentifiedButtonEvent> wait_any(std::span<Button> buttons,
+                                                       std::chrono::milliseconds timeout);
+
+  int poll_fd() const;
+  void consume_edge();
+  std::optional<ButtonEvent> observe_now();
+  std::chrono::milliseconds debounce_interval() const;
+
   GpioInput input_;
   bool active_low_ = true;
   ButtonDebounce debounce_;
 
   bool raw_pressed() const;
 };
+
+// Wait until one button emits a debounced press or release. index matches the span order.
+std::optional<IdentifiedButtonEvent> wait_any(std::span<Button> buttons,
+                                               std::chrono::milliseconds timeout);
 
 }  // namespace arc

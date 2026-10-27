@@ -149,6 +149,13 @@ GpioInput& GpioInput::operator=(GpioInput&& other) noexcept {
   return *this;
 }
 
+int GpioInput::poll_fd() const {
+  if (fd_ < 0) {
+    throw std::logic_error("poll on a moved-from GPIO input");
+  }
+  return fd_;
+}
+
 bool GpioInput::get() const {
   if (fd_ < 0) {
     throw std::logic_error("get on a moved-from GPIO input");
