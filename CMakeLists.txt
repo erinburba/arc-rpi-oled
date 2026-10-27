@@ -14,8 +14,10 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
 
   add_library(arc_hw
     src/spi_device.cpp
+    src/i2c_device.cpp
     src/gpio_line.cpp
     src/spi_display_transport.cpp
+    src/i2c_display_transport.cpp
   )
   target_include_directories(arc_hw PUBLIC include)
   target_link_libraries(arc_hw PUBLIC Threads::Threads)

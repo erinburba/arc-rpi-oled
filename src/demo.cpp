@@ -1,7 +1,6 @@
 #include "arc/gpio_input.hpp"
-#include "arc/gpio_output.hpp"
-#include "arc/spi_device.hpp"
-#include "arc/spi_display_transport.hpp"
+#include "arc/i2c_device.hpp"
+#include "arc/i2c_display_transport.hpp"
 #include "arc/ssd1306.hpp"
 
 #include <chrono>
@@ -22,19 +21,17 @@ volatile std::sig_atomic_t g_stop = 0;
 void on_signal(int) { g_stop = 1; }
 
 struct Options {
-  std::string spi = "/dev/spidev0.0";
+  std::string i2c = "/dev/i2c-1";
+  std::uint8_t address = 0x3C;
   std::string gpiochip = "/dev/gpiochip0";
-  std::uint32_t dc = 24;
-  std::optional<std::uint32_t> reset = 25;
   std::optional<std::uint32_t> button;
 };
 
 void print_usage() {
   std::cerr
-      << "Usage: oled_demo [--spi PATH] [--gpiochip PATH] [--dc N] [--reset N] [--no-reset]\n"
-      << "                 [--button [N]]\n"
+      << "Usage: oled_demo [--i2c PATH] [--address ADDR] [--gpiochip PATH] [--button [N]]\n"
       << "\n"
-      << "Defaults: --spi /dev/spidev0.0 --gpiochip /dev/gpiochip0 --dc 24 --reset 25\n"
+      << "Defaults: --i2c /dev/i2c-1 --address 0x3c\n"
       << "Without --button the demo draws once and exits. --button uses BCM 23 unless N is set.\n"
       << "On Pi 5 the header is often /dev/gpiochip4.\n";
 }
@@ -70,16 +67,20 @@ Options parse_args(int argc, char** argv) {
     if (arg == "--help" || arg == "-h") {
       print_usage();
       std::exit(EXIT_SUCCESS);
-    } else if (arg == "--spi") {
-      options.spi = require("--spi");
+    } else if (arg == "--i2c") {
+      options.i2c = require("--i2c");
+    } else if (arg == "--address") {
+      try {
+        const unsigned long address = std::stoul(require("--address"), nullptr, 0);
+        if (address > 0x7F) {
+          throw std::invalid_argument("--address");
+        }
+        options.address = static_cast<std::uint8_t>(address);
+      } catch (const std::exception&) {
+        throw std::invalid_argument("expected a 7-bit I2C address for --address");
+      }
     } else if (arg == "--gpiochip") {
       options.gpiochip = require("--gpiochip");
-    } else if (arg == "--dc") {
-      options.dc = parse_u32(require("--dc"), "--dc");
-    } else if (arg == "--reset") {
-      options.reset = parse_u32(require("--reset"), "--reset");
-    } else if (arg == "--no-reset") {
-      options.reset.reset();
     } else if (arg == "--button") {
       if (i + 1 < argc && argv[i + 1][0] != '-') {
         options.button = parse_u32(argv[++i], "--button");
@@ -112,13 +113,8 @@ void draw(arc::Ssd1306& display) {
 int main(int argc, char** argv) {
   try {
     const Options options = parse_args(argc, argv);
-    arc::SpiDevice spi({options.spi});
-    arc::GpioOutput dc(options.gpiochip, options.dc, false);
-    std::optional<arc::GpioOutput> reset;
-    if (options.reset.has_value()) {
-      reset.emplace(options.gpiochip, *options.reset, true);
-    }
-    arc::SpiDisplayTransport transport(spi, dc, reset ? &*reset : nullptr);
+    arc::I2cDevice i2c({options.i2c, options.address});
+    arc::I2cDisplayTransport transport(i2c);
     arc::Ssd1306 display(transport);
     display.init();
     draw(display);
