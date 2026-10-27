@@ -1,11 +1,17 @@
 #include "arc/websocket.hpp"
 
+#include <openssl/err.h>
+#include <openssl/ssl.h>
+#include <openssl/x509_vfy.h>
+
+#include <arpa/inet.h>
 #include <fcntl.h>
 #include <netdb.h>
 #include <poll.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <array>
 #include <cerrno>
 #include <chrono>
@@ -22,6 +28,25 @@ constexpr int kHandshakeLimit = 8192;
 
 [[noreturn]] void throw_error(int err, const std::string& what) {
   throw std::system_error(err, std::generic_category(), what);
+}
+
+std::string tls_error(const char* what) {
+  const unsigned long code = ERR_get_error();
+  if (code == 0) {
+    return what;
+  }
+  char text[256];
+  ERR_error_string_n(code, text, sizeof(text));
+  return std::string(what) + ": " + text;
+}
+
+bool is_ip_literal(const std::string& host) {
+  in_addr ipv4{};
+  if (::inet_pton(AF_INET, host.c_str(), &ipv4) == 1) {
+    return true;
+  }
+  in6_addr ipv6{};
+  return ::inet_pton(AF_INET6, host.c_str(), &ipv6) == 1;
 }
 
 struct AddrInfoFree {
@@ -164,7 +189,8 @@ int connect_tcp(const std::string& host, std::uint16_t port) {
 
 std::string handshake_request(const WebSocketConfig& config, std::string_view key) {
   std::string host = config.host;
-  if (config.port != 80) {
+  const std::uint16_t default_port = config.tls ? 443 : 80;
+  if (config.port != default_port) {
     host.push_back(':');
     host += std::to_string(config.port);
   }
@@ -182,14 +208,16 @@ std::string handshake_request(const WebSocketConfig& config, std::string_view ke
 }  // namespace
 
 WebSocketConfig parse_websocket_url(std::string_view url) {
+  bool tls = false;
+  std::string_view rest;
   if (url.starts_with("wss://")) {
-    throw std::invalid_argument("wss:// is not supported");
+    tls = true;
+    rest = url.substr(6);
+  } else if (url.starts_with("ws://")) {
+    rest = url.substr(5);
+  } else {
+    throw std::invalid_argument("websocket URL must start with ws:// or wss://");
   }
-  constexpr std::string_view kPrefix = "ws://";
-  if (!url.starts_with(kPrefix)) {
-    throw std::invalid_argument("websocket URL must start with ws://");
-  }
-  const std::string_view rest = url.substr(kPrefix.size());
   const std::size_t slash = rest.find('/');
   const std::string_view authority = slash == std::string_view::npos ? rest : rest.substr(0, slash);
   WebSocketConfig config;
@@ -209,11 +237,12 @@ WebSocketConfig parse_websocket_url(std::string_view url) {
     throw std::invalid_argument("websocket URL host is invalid");
   }
   config.host = std::string(host);
+  config.tls = tls;
   if (port_text.empty()) {
     if (colon != std::string_view::npos) {
       throw std::invalid_argument("websocket URL port is invalid");
     }
-    config.port = 80;
+    config.port = tls ? 443 : 80;
   } else {
     unsigned long port = 0;
     for (const char character : port_text) {
@@ -243,6 +272,9 @@ WebSocketClient::WebSocketClient(WebSocketConfig config) {
     const std::string key = websocket_nonce_key(nonce);
     const std::string request = handshake_request(config, key);
     fd_ = fd;
+    if (config.tls) {
+      start_tls(config);
+    }
     send_all({reinterpret_cast<const std::uint8_t*>(request.data()), request.size()});
 
     std::string buffered;
@@ -258,22 +290,18 @@ WebSocketClient::WebSocketClient(WebSocketConfig config) {
       if (buffered.size() > kHandshakeLimit) {
         throw std::runtime_error("websocket handshake is too large");
       }
-      if (wait_for(fd_, POLLIN, deadline) == 0) {
+      std::uint8_t chunk[1024];
+      const ReadChunk read = read_chunk(chunk, deadline);
+      if (read.status == ReadStatus::Interrupted) {
+        continue;
+      }
+      if (read.status == ReadStatus::Timeout) {
         throw std::runtime_error("websocket handshake timed out");
       }
-      char chunk[1024];
-      const ssize_t n = ::recv(fd_, chunk, sizeof(chunk), 0);
-      if (n < 0) {
-        if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) {
-          continue;
-        }
-        const int err = errno;
-        throw_error(err, "websocket handshake");
-      }
-      if (n == 0) {
+      if (read.status == ReadStatus::Closed) {
         throw std::runtime_error("websocket closed during handshake");
       }
-      buffered.append(chunk, static_cast<std::size_t>(n));
+      buffered.append(reinterpret_cast<const char*>(chunk), read.size);
     }
   } catch (...) {
     if (fd_ < 0) {
@@ -289,10 +317,14 @@ WebSocketClient::~WebSocketClient() { close_fd(); }
 
 WebSocketClient::WebSocketClient(WebSocketClient&& other) noexcept
     : fd_(std::exchange(other.fd_, -1)),
+      ssl_(std::exchange(other.ssl_, nullptr)),
+      ctx_(std::exchange(other.ctx_, nullptr)),
+      tls_ready_(other.tls_ready_),
       closed_(other.closed_),
       close_sent_(other.close_sent_),
       parser_(std::move(other.parser_)),
       assembler_(std::move(other.assembler_)) {
+  other.tls_ready_ = false;
   other.closed_ = true;
 }
 
@@ -300,10 +332,14 @@ WebSocketClient& WebSocketClient::operator=(WebSocketClient&& other) noexcept {
   if (this != &other) {
     close_fd();
     fd_ = std::exchange(other.fd_, -1);
+    ssl_ = std::exchange(other.ssl_, nullptr);
+    ctx_ = std::exchange(other.ctx_, nullptr);
+    tls_ready_ = other.tls_ready_;
     closed_ = other.closed_;
     close_sent_ = other.close_sent_;
     parser_ = std::move(other.parser_);
     assembler_ = std::move(other.assembler_);
+    other.tls_ready_ = false;
     other.closed_ = true;
   }
   return *this;
@@ -312,9 +348,78 @@ WebSocketClient& WebSocketClient::operator=(WebSocketClient&& other) noexcept {
 bool WebSocketClient::closed() const { return closed_; }
 
 void WebSocketClient::close_fd() noexcept {
+  if (ssl_ != nullptr) {
+    if (tls_ready_) {
+      SSL_shutdown(ssl_);
+    }
+    SSL_free(ssl_);
+    ssl_ = nullptr;
+  }
+  if (ctx_ != nullptr) {
+    SSL_CTX_free(ctx_);
+    ctx_ = nullptr;
+  }
+  tls_ready_ = false;
   if (fd_ >= 0) {
     ::close(fd_);
     fd_ = -1;
+  }
+}
+
+void WebSocketClient::start_tls(const WebSocketConfig& config) {
+  ctx_ = SSL_CTX_new(TLS_client_method());
+  if (ctx_ == nullptr) {
+    throw std::runtime_error(tls_error("TLS setup"));
+  }
+  SSL_CTX_set_min_proto_version(ctx_, TLS1_2_VERSION);
+  SSL_CTX_set_verify(ctx_, SSL_VERIFY_PEER, nullptr);
+  const int system_certs = SSL_CTX_set_default_verify_paths(ctx_);
+  if (system_certs != 1) {
+    ERR_clear_error();
+  }
+  if (!config.ca_file.empty() && SSL_CTX_load_verify_locations(ctx_, config.ca_file.c_str(), nullptr) != 1) {
+    throw std::runtime_error("could not load " + config.ca_file);
+  }
+  if (system_certs != 1 && config.ca_file.empty()) {
+    throw std::runtime_error("could not load system certificates");
+  }
+
+  ssl_ = SSL_new(ctx_);
+  if (ssl_ == nullptr) {
+    throw std::runtime_error(tls_error("TLS setup"));
+  }
+  SSL_set_fd(ssl_, fd_);
+  SSL_set_mode(ssl_, SSL_MODE_ENABLE_PARTIAL_WRITE | SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER);
+  if (is_ip_literal(config.host)) {
+    if (X509_VERIFY_PARAM_set1_ip_asc(SSL_get0_param(ssl_), config.host.c_str()) != 1) {
+      throw std::runtime_error(tls_error("TLS host check"));
+    }
+  } else {
+    if (SSL_set_tlsext_host_name(ssl_, config.host.c_str()) != 1 || SSL_set1_host(ssl_, config.host.c_str()) != 1) {
+      throw std::runtime_error(tls_error("TLS host check"));
+    }
+  }
+
+  const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(kConnectTimeoutMs);
+  for (;;) {
+    const int rc = SSL_connect(ssl_);
+    if (rc == 1) {
+      tls_ready_ = true;
+      return;
+    }
+    const int err = SSL_get_error(ssl_, rc);
+    if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE) {
+      const short events = err == SSL_ERROR_WANT_WRITE ? POLLOUT : POLLIN;
+      if (wait_for(fd_, events, deadline) == 0) {
+        throw std::runtime_error("websocket TLS handshake timed out");
+      }
+      continue;
+    }
+    const long verify = SSL_get_verify_result(ssl_);
+    if (verify != X509_V_OK) {
+      throw std::runtime_error(std::string("websocket certificate: ") + X509_verify_cert_error_string(verify));
+    }
+    throw std::runtime_error(tls_error("websocket TLS handshake"));
   }
 }
 
@@ -325,6 +430,24 @@ void WebSocketClient::send_all(std::span<const std::uint8_t> bytes) {
   std::size_t sent = 0;
   while (sent < bytes.size()) {
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(kConnectTimeoutMs);
+    if (ssl_ != nullptr) {
+      const int chunk = static_cast<int>(std::min(bytes.size() - sent, static_cast<std::size_t>(16 * 1024)));
+      const int n = SSL_write(ssl_, bytes.data() + sent, chunk);
+      if (n > 0) {
+        sent += static_cast<std::size_t>(n);
+        continue;
+      }
+      const int err = SSL_get_error(ssl_, n);
+      if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE) {
+        const short events = err == SSL_ERROR_WANT_WRITE ? POLLOUT : POLLIN;
+        if (wait_for(fd_, events, deadline) == 0) {
+          throw std::runtime_error("websocket send timed out");
+        }
+        continue;
+      }
+      throw std::runtime_error(tls_error("websocket send"));
+    }
+
     if (wait_for(fd_, POLLOUT, deadline) == 0) {
       throw std::runtime_error("websocket send timed out");
     }
@@ -344,6 +467,84 @@ void WebSocketClient::send_all(std::span<const std::uint8_t> bytes) {
       throw std::runtime_error("websocket send wrote nothing");
     }
     sent += static_cast<std::size_t>(n);
+  }
+}
+
+WebSocketClient::ReadChunk WebSocketClient::read_chunk(std::span<std::uint8_t> buffer,
+                                                       std::chrono::steady_clock::time_point deadline) {
+  if (buffer.empty()) {
+    throw std::invalid_argument("websocket read buffer is empty");
+  }
+  for (;;) {
+    if (ssl_ != nullptr) {
+      const int n = SSL_read(ssl_, buffer.data(), static_cast<int>(buffer.size()));
+      if (n > 0) {
+        return {ReadStatus::Bytes, static_cast<std::size_t>(n)};
+      }
+      const int err = SSL_get_error(ssl_, n);
+      if (err == SSL_ERROR_ZERO_RETURN) {
+        return {ReadStatus::Closed, 0};
+      }
+      if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE ||
+          (err == SSL_ERROR_SYSCALL && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR))) {
+        const short events = err == SSL_ERROR_WANT_WRITE ? POLLOUT : POLLIN;
+        const auto now = std::chrono::steady_clock::now();
+        if (now >= deadline) {
+          return {ReadStatus::Timeout, 0};
+        }
+        const auto slice = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now);
+        pollfd ready{fd_, events, 0};
+        const int result = ::poll(&ready, 1, static_cast<int>(slice.count()));
+        if (result < 0) {
+          if (errno == EINTR) {
+            return {ReadStatus::Interrupted, 0};
+          }
+          const int poll_error = errno;
+          throw_error(poll_error, "websocket receive");
+        }
+        if (result == 0) {
+          return {ReadStatus::Timeout, 0};
+        }
+        continue;
+      }
+      if (err == SSL_ERROR_SYSCALL && n == 0) {
+        return {ReadStatus::Closed, 0};
+      }
+      throw std::runtime_error(tls_error("websocket receive"));
+    }
+
+    const auto now = std::chrono::steady_clock::now();
+    if (now >= deadline) {
+      return {ReadStatus::Timeout, 0};
+    }
+    const auto slice = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now);
+    pollfd ready{fd_, POLLIN, 0};
+    const int result = ::poll(&ready, 1, static_cast<int>(slice.count()));
+    if (result < 0) {
+      if (errno == EINTR) {
+        return {ReadStatus::Interrupted, 0};
+      }
+      const int err = errno;
+      throw_error(err, "websocket receive");
+    }
+    if (result == 0) {
+      return {ReadStatus::Timeout, 0};
+    }
+    const ssize_t n = ::recv(fd_, buffer.data(), buffer.size(), 0);
+    if (n < 0) {
+      if (errno == EINTR) {
+        return {ReadStatus::Interrupted, 0};
+      }
+      if (errno == EAGAIN || errno == EWOULDBLOCK) {
+        continue;
+      }
+      const int err = errno;
+      throw_error(err, "websocket receive");
+    }
+    if (n == 0) {
+      return {ReadStatus::Closed, 0};
+    }
+    return {ReadStatus::Bytes, static_cast<std::size_t>(n)};
   }
 }
 
@@ -413,37 +614,16 @@ std::optional<WebSocketMessage> WebSocketClient::receive(std::chrono::millisecon
     if (closed_) {
       return std::nullopt;
     }
-    const auto now = std::chrono::steady_clock::now();
-    if (now >= deadline) {
+    std::uint8_t chunk[4096];
+    const ReadChunk read = read_chunk(chunk, deadline);
+    if (read.status == ReadStatus::Interrupted || read.status == ReadStatus::Timeout) {
       return std::nullopt;
     }
-    const auto slice = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - now);
-    pollfd ready{fd_, POLLIN, 0};
-    const int result = ::poll(&ready, 1, static_cast<int>(slice.count()));
-    if (result < 0) {
-      if (errno == EINTR) {
-        return std::nullopt;
-      }
-      const int err = errno;
-      throw_error(err, "websocket receive");
-    }
-    if (result == 0) {
-      continue;
-    }
-    std::uint8_t chunk[4096];
-    const ssize_t n = ::recv(fd_, chunk, sizeof(chunk), 0);
-    if (n < 0) {
-      if (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) {
-        continue;
-      }
-      const int err = errno;
-      throw_error(err, "websocket receive");
-    }
-    if (n == 0) {
+    if (read.status == ReadStatus::Closed) {
       closed_ = true;
       return std::nullopt;
     }
-    parser_.append({chunk, static_cast<std::size_t>(n)});
+    parser_.append({chunk, read.size});
   }
 }
 

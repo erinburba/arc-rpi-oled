@@ -39,6 +39,12 @@ The optional buttons are switches to ground. `Button` enables the internal pull-
 
 ## Build
 
+The WebSocket client links OpenSSL. On the Pi:
+
+```bash
+sudo apt install libssl-dev
+```
+
 ```bash
 cmake -S . -B build
 cmake --build build
@@ -58,10 +64,12 @@ Without `--buttons` or `--websocket` the program draws a border and a filled blo
 
 ## WebSocket
 
-`WebSocketClient` connects to a `ws://` server and returns each text or binary message. Ping frames are answered with pong, and a close from the peer ends the receive loop. `wss://` is not supported.
+`WebSocketClient` connects to a `ws://` or `wss://` server and returns each text or binary message. Ping frames are answered with pong, and a close from the peer ends the receive loop. `wss://` checks the server certificate against the system trust store. `--ca` adds a PEM trust anchor for a private certificate.
 
 ```bash
 ./build/oled_demo --websocket ws://127.0.0.1:8765/oled
+./build/oled_demo --websocket wss://panel.example/oled
+./build/oled_demo --websocket wss://panel.example/oled --ca panel.pem
 ```
 
 Each text message is printed. The panel inverts when a message arrives, until Ctrl-C.

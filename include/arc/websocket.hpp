@@ -9,6 +9,9 @@
 #include <string_view>
 #include <vector>
 
+struct ssl_st;
+struct ssl_ctx_st;
+
 namespace arc {
 
 inline constexpr std::size_t kMaxWebSocketMessage = 1024 * 1024;
@@ -84,17 +87,22 @@ class WebSocketAssembler {
   std::vector<std::uint8_t> data_;
 };
 
-// ws://host[:port][/path]. wss:// is rejected. The default port is 80 and the default path is /.
+// ws://host[:port][/path] or wss://host[:port][/path].
+// The default port is 80 for ws and 443 for wss. The default path is /.
+// ca_file is an extra PEM trust anchor. Empty uses the system trust store.
 struct WebSocketConfig {
   std::string host;
   std::uint16_t port = 80;
   std::string path = "/";
+  bool tls = false;
+  std::string ca_file;
 };
 
 WebSocketConfig parse_websocket_url(std::string_view url);
 
-// Receives messages from one ws:// server. Pings are answered with a pong.
-// receive returns nullopt on timeout, and also after the peer closes; closed() tells them apart.
+// Receives messages from one WebSocket server. wss:// checks the server certificate.
+// Pings are answered with a pong. receive returns nullopt on timeout, and also after
+// the peer closes; closed() tells them apart.
 class WebSocketClient {
  public:
   explicit WebSocketClient(WebSocketConfig config);
@@ -109,15 +117,27 @@ class WebSocketClient {
   std::optional<WebSocketMessage> receive(std::chrono::milliseconds timeout);
 
  private:
+  enum class ReadStatus { Bytes, Closed, Timeout, Interrupted };
+
+  struct ReadChunk {
+    ReadStatus status = ReadStatus::Closed;
+    std::size_t size = 0;
+  };
+
   int fd_ = -1;
+  ssl_st* ssl_ = nullptr;
+  ssl_ctx_st* ctx_ = nullptr;
+  bool tls_ready_ = false;
   bool closed_ = false;
   bool close_sent_ = false;
   WebSocketParser parser_;
   WebSocketAssembler assembler_;
 
   void close_fd() noexcept;
+  void start_tls(const WebSocketConfig& config);
   void send_all(std::span<const std::uint8_t> bytes);
   void send_frame(const WebSocketFrame& frame);
+  ReadChunk read_chunk(std::span<std::uint8_t> buffer, std::chrono::steady_clock::time_point deadline);
   std::optional<WebSocketMessage> drain();
 };
 

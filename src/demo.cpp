@@ -28,12 +28,13 @@ struct Options {
   std::string gpiochip = "/dev/gpiochip0";
   std::vector<std::uint32_t> buttons;
   std::optional<arc::WebSocketConfig> websocket;
+  std::string ca_file;
 };
 
 void print_usage() {
   std::cerr
       << "Usage: oled_demo [--i2c PATH] [--address ADDR] [--gpiochip PATH]\n"
-      << "                 [--buttons [A B]] [--websocket ws://HOST[:PORT]/PATH]\n"
+      << "                 [--buttons [A B]] [--websocket ws:// or wss:// URL] [--ca PEM]\n"
       << "\n"
       << "Defaults: --i2c /dev/i2c-1 --address 0x3d\n"
       << "Without --buttons or --websocket the demo draws once and exits.\n"
@@ -41,6 +42,7 @@ void print_usage() {
       << "Both buttons are active low with the internal pull-up.\n"
       << "A press on the first inverts the display. A press on the second toggles the block.\n"
       << "--websocket prints each text message and inverts the display when one arrives.\n"
+      << "wss:// checks the server certificate. --ca adds a PEM trust anchor.\n"
       << "On Pi 5 the header is often /dev/gpiochip4.\n";
 }
 
@@ -103,12 +105,20 @@ Options parse_args(int argc, char** argv) {
       options.buttons = std::move(pins);
     } else if (arg == "--websocket") {
       options.websocket = arc::parse_websocket_url(require("--websocket"));
+    } else if (arg == "--ca") {
+      options.ca_file = require("--ca");
     } else {
       throw std::invalid_argument("unknown argument: " + arg);
     }
   }
+  if (!options.ca_file.empty() && !options.websocket.has_value()) {
+    throw std::invalid_argument("--ca requires --websocket");
+  }
   if (options.websocket.has_value() && !options.buttons.empty()) {
     throw std::invalid_argument("--websocket and --buttons cannot be used together");
+  }
+  if (options.websocket.has_value()) {
+    options.websocket->ca_file = options.ca_file;
   }
   return options;
 }
@@ -147,8 +157,8 @@ int main(int argc, char** argv) {
       arc::WebSocketClient client(endpoint);
       std::signal(SIGINT, on_signal);
       std::signal(SIGTERM, on_signal);
-      std::cout << "Waiting for messages from ws://" << endpoint.host << ":" << endpoint.port
-                << endpoint.path << " (Ctrl-C to exit)\n";
+      std::cout << "Waiting for messages from " << (endpoint.tls ? "wss://" : "ws://") << endpoint.host << ":"
+                << endpoint.port << endpoint.path << " (Ctrl-C to exit)\n";
       bool inverted = false;
       while (g_stop == 0 && !client.closed()) {
         const std::optional<arc::WebSocketMessage> message = client.receive(std::chrono::milliseconds(200));

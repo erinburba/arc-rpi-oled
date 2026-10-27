@@ -6,6 +6,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 find_package(Threads REQUIRED)
+find_package(OpenSSL REQUIRED)
 
 add_library(arc_oled
   src/ssd1306.cpp
@@ -14,6 +15,7 @@ add_library(arc_oled
   src/websocket_client.cpp
 )
 target_include_directories(arc_oled PUBLIC include)
+target_link_libraries(arc_oled PUBLIC OpenSSL::SSL OpenSSL::Crypto)
 target_compile_options(arc_oled PRIVATE -Wall -Wextra -Wpedantic)
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")

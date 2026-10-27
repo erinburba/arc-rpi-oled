@@ -1,5 +1,11 @@
 #include "arc/websocket.hpp"
 
+#include <openssl/evp.h>
+#include <openssl/pem.h>
+#include <openssl/ssl.h>
+#include <openssl/x509.h>
+#include <openssl/x509v3.h>
+
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <poll.h>
@@ -9,11 +15,13 @@
 #include <array>
 #include <cerrno>
 #include <chrono>
+#include <cstdio>
 #include <cstdlib>
 #include <exception>
 #include <iostream>
 #include <optional>
 #include <stdexcept>
+#include <algorithm>
 #include <string>
 #include <thread>
 #include <utility>
@@ -298,19 +306,32 @@ void test_url() {
   EXPECT(home.host == "panel.local");
   EXPECT(home.port == 80);
   EXPECT(home.path == "/oled");
+  EXPECT(!home.tls);
 
   const arc::WebSocketConfig explicit_port = arc::parse_websocket_url("ws://127.0.0.1:8765");
   EXPECT(explicit_port.host == "127.0.0.1");
   EXPECT(explicit_port.port == 8765);
   EXPECT(explicit_port.path == "/");
+  EXPECT(!explicit_port.tls);
 
-  bool rejected_tls = false;
+  const arc::WebSocketConfig secure = arc::parse_websocket_url("wss://panel.local/oled");
+  EXPECT(secure.host == "panel.local");
+  EXPECT(secure.port == 443);
+  EXPECT(secure.path == "/oled");
+  EXPECT(secure.tls);
+
+  const arc::WebSocketConfig secure_port = arc::parse_websocket_url("wss://127.0.0.1:8443/x");
+  EXPECT(secure_port.host == "127.0.0.1");
+  EXPECT(secure_port.port == 8443);
+  EXPECT(secure_port.tls);
+
+  bool rejected = false;
   try {
-    arc::parse_websocket_url("wss://panel.local/oled");
+    arc::parse_websocket_url("https://panel.local/oled");
   } catch (const std::invalid_argument&) {
-    rejected_tls = true;
+    rejected = true;
   }
-  EXPECT(rejected_tls);
+  EXPECT(rejected);
 }
 
 void test_receive_text() {
@@ -337,7 +358,7 @@ void test_receive_text() {
     }
   } join{server};
 
-  arc::WebSocketClient client(arc::WebSocketConfig{"127.0.0.1", port, "/oled"});
+  arc::WebSocketClient client(arc::WebSocketConfig{"127.0.0.1", port, "/oled", false, ""});
   const std::optional<arc::WebSocketMessage> message = client.receive(std::chrono::milliseconds(2000));
   EXPECT(message.has_value());
   EXPECT(!message->binary);
@@ -386,7 +407,7 @@ void test_ping_then_text() {
     }
   } join{server};
 
-  arc::WebSocketClient client(arc::WebSocketConfig{"127.0.0.1", port, "/"});
+  arc::WebSocketClient client(arc::WebSocketConfig{"127.0.0.1", port, "/", false, ""});
   const std::optional<arc::WebSocketMessage> message = client.receive(std::chrono::milliseconds(2000));
   EXPECT(message.has_value());
   EXPECT(text_of(message->data) == "ok");
@@ -425,7 +446,7 @@ void test_receive_timeout() {
   } join{server};
 
   {
-    arc::WebSocketClient client(arc::WebSocketConfig{"127.0.0.1", port, "/"});
+    arc::WebSocketClient client(arc::WebSocketConfig{"127.0.0.1", port, "/", false, ""});
     const auto started = std::chrono::steady_clock::now();
     const std::optional<arc::WebSocketMessage> timed_out = client.receive(std::chrono::milliseconds(50));
     EXPECT(!timed_out.has_value());
@@ -467,7 +488,7 @@ void test_peer_close() {
     }
   } join{server};
 
-  arc::WebSocketClient client(arc::WebSocketConfig{"127.0.0.1", port, "/"});
+  arc::WebSocketClient client(arc::WebSocketConfig{"127.0.0.1", port, "/", false, ""});
   const std::optional<arc::WebSocketMessage> closed = client.receive(std::chrono::milliseconds(2000));
   EXPECT(!closed.has_value());
   EXPECT(client.closed());
@@ -475,6 +496,219 @@ void test_peer_close() {
   if (error) {
     std::rethrow_exception(error);
   }
+}
+
+struct TestCertificate {
+  EVP_PKEY* key = nullptr;
+  X509* cert = nullptr;
+  SSL_CTX* server = nullptr;
+  std::string pem_path;
+
+  TestCertificate() = default;
+  TestCertificate(const TestCertificate&) = delete;
+  TestCertificate& operator=(const TestCertificate&) = delete;
+  TestCertificate(TestCertificate&& other) noexcept
+      : key(std::exchange(other.key, nullptr)),
+        cert(std::exchange(other.cert, nullptr)),
+        server(std::exchange(other.server, nullptr)),
+        pem_path(std::move(other.pem_path)) {}
+
+  ~TestCertificate() {
+    if (server != nullptr) {
+      SSL_CTX_free(server);
+    }
+    if (cert != nullptr) {
+      X509_free(cert);
+    }
+    if (key != nullptr) {
+      EVP_PKEY_free(key);
+    }
+    if (!pem_path.empty()) {
+      ::unlink(pem_path.c_str());
+    }
+  }
+};
+
+TestCertificate make_test_certificate() {
+  TestCertificate made;
+  EVP_PKEY_CTX* params = EVP_PKEY_CTX_new_id(EVP_PKEY_EC, nullptr);
+  if (params == nullptr || EVP_PKEY_keygen_init(params) != 1 ||
+      EVP_PKEY_CTX_set_ec_paramgen_curve_nid(params, NID_X9_62_prime256v1) != 1 ||
+      EVP_PKEY_keygen(params, &made.key) != 1) {
+    EVP_PKEY_CTX_free(params);
+    throw std::runtime_error("test certificate key");
+  }
+  EVP_PKEY_CTX_free(params);
+
+  made.cert = X509_new();
+  if (made.cert == nullptr || ASN1_INTEGER_set(X509_get_serialNumber(made.cert), 1) != 1 ||
+      X509_gmtime_adj(X509_getm_notBefore(made.cert), 0) == nullptr ||
+      X509_gmtime_adj(X509_getm_notAfter(made.cert), 60 * 60) == nullptr ||
+      X509_set_pubkey(made.cert, made.key) != 1) {
+    throw std::runtime_error("test certificate");
+  }
+  X509_NAME* name = X509_get_subject_name(made.cert);
+  if (X509_NAME_add_entry_by_txt(name, "CN", MBSTRING_ASC, reinterpret_cast<const unsigned char*>("127.0.0.1"), -1,
+                                 -1, 0) != 1 ||
+      X509_set_issuer_name(made.cert, name) != 1) {
+    throw std::runtime_error("test certificate name");
+  }
+
+  X509V3_CTX extension_context;
+  X509V3_set_ctx_nodb(&extension_context);
+  X509V3_set_ctx(&extension_context, made.cert, made.cert, nullptr, nullptr, 0);
+  X509_EXTENSION* san = X509V3_EXT_conf_nid(nullptr, &extension_context, NID_subject_alt_name, "IP:127.0.0.1");
+  if (san == nullptr || X509_add_ext(made.cert, san, -1) != 1) {
+    X509_EXTENSION_free(san);
+    throw std::runtime_error("test certificate subject alternative name");
+  }
+  X509_EXTENSION_free(san);
+  if (X509_sign(made.cert, made.key, EVP_sha256()) == 0) {
+    throw std::runtime_error("test certificate signature");
+  }
+
+  char path[] = "/tmp/arc-wss-XXXXXX";
+  const int pem_fd = ::mkstemp(path);
+  if (pem_fd < 0) {
+    throw std::runtime_error("test certificate file");
+  }
+  FILE* pem = ::fdopen(pem_fd, "w");
+  if (pem == nullptr) {
+    ::close(pem_fd);
+    ::unlink(path);
+    throw std::runtime_error("test certificate file");
+  }
+  const int wrote = PEM_write_X509(pem, made.cert);
+  if (std::fclose(pem) != 0 || wrote != 1) {
+    ::unlink(path);
+    throw std::runtime_error("test certificate file");
+  }
+  made.pem_path = path;
+
+  made.server = SSL_CTX_new(TLS_server_method());
+  if (made.server == nullptr || SSL_CTX_set_min_proto_version(made.server, TLS1_2_VERSION) != 1 ||
+      SSL_CTX_use_certificate(made.server, made.cert) != 1 || SSL_CTX_use_PrivateKey(made.server, made.key) != 1) {
+    throw std::runtime_error("test TLS server");
+  }
+  return made;
+}
+
+struct Ssl {
+  SSL* ssl = nullptr;
+  explicit Ssl(SSL* owned = nullptr) : ssl(owned) {}
+  ~Ssl() {
+    if (ssl != nullptr) {
+      SSL_free(ssl);
+    }
+  }
+  Ssl(const Ssl&) = delete;
+  Ssl& operator=(const Ssl&) = delete;
+};
+
+void ssl_write_all(SSL* ssl, const void* data, std::size_t size) {
+  const auto* bytes = static_cast<const std::uint8_t*>(data);
+  std::size_t sent = 0;
+  while (sent < size) {
+    const int chunk = static_cast<int>(std::min(size - sent, static_cast<std::size_t>(16 * 1024)));
+    const int n = SSL_write(ssl, bytes + sent, chunk);
+    if (n <= 0) {
+      throw std::runtime_error("TLS server write failed");
+    }
+    sent += static_cast<std::size_t>(n);
+  }
+}
+
+void test_wss_receive() {
+  const TestCertificate certificate = make_test_certificate();
+  std::uint16_t port = 0;
+  Socket listener = listen_local(port);
+  std::exception_ptr error;
+  std::thread server([&] {
+    try {
+      Socket peer = accept_one(listener.fd);
+      Ssl ssl(SSL_new(certificate.server));
+      if (ssl.ssl == nullptr) {
+        throw std::runtime_error("SSL_new");
+      }
+      SSL_set_fd(ssl.ssl, peer.fd);
+      if (SSL_accept(ssl.ssl) != 1) {
+        throw std::runtime_error("SSL_accept");
+      }
+      std::string buffered;
+      while (buffered.find("\r\n\r\n") == std::string::npos) {
+        char chunk[512];
+        const int n = SSL_read(ssl.ssl, chunk, sizeof(chunk));
+        if (n <= 0) {
+          throw std::runtime_error("SSL_read");
+        }
+        buffered.append(chunk, static_cast<std::size_t>(n));
+      }
+      const std::string response = "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+                                   "Sec-WebSocket-Accept: " +
+                                   arc::websocket_accept_key(header_value(buffered, "Sec-WebSocket-Key:")) + "\r\n\r\n";
+      ssl_write_all(ssl.ssl, response.data(), response.size());
+      const std::uint8_t frame[] = {0x81, 0x05, 'H', 'e', 'l', 'l', 'o'};
+      ssl_write_all(ssl.ssl, frame, sizeof(frame));
+    } catch (...) {
+      error = std::current_exception();
+    }
+  });
+
+  struct Join {
+    std::thread& thread;
+    ~Join() {
+      if (thread.joinable()) {
+        thread.join();
+      }
+    }
+  } join{server};
+
+  arc::WebSocketClient client(arc::WebSocketConfig{"127.0.0.1", port, "/oled", true, certificate.pem_path});
+  const std::optional<arc::WebSocketMessage> message = client.receive(std::chrono::milliseconds(2000));
+  EXPECT(message.has_value());
+  if (message.has_value()) {
+    EXPECT(text_of(message->data) == "Hello");
+  }
+  server.join();
+  if (error) {
+    std::rethrow_exception(error);
+  }
+}
+
+void test_wss_rejects_untrusted_certificate() {
+  const TestCertificate certificate = make_test_certificate();
+  std::uint16_t port = 0;
+  Socket listener = listen_local(port);
+  std::thread server([&] {
+    try {
+      Socket peer = accept_one(listener.fd);
+      Ssl ssl(SSL_new(certificate.server));
+      if (ssl.ssl != nullptr) {
+        SSL_set_fd(ssl.ssl, peer.fd);
+        SSL_accept(ssl.ssl);
+      }
+    } catch (...) {
+    }
+  });
+
+  struct Join {
+    std::thread& thread;
+    ~Join() {
+      if (thread.joinable()) {
+        thread.join();
+      }
+    }
+  } join{server};
+
+  bool rejected = false;
+  try {
+    const arc::WebSocketClient client(arc::WebSocketConfig{"127.0.0.1", port, "/", true, ""});
+    (void)client;
+  } catch (const std::runtime_error&) {
+    rejected = true;
+  }
+  EXPECT(rejected);
+  server.join();
 }
 
 }  // namespace
@@ -494,6 +728,8 @@ int main() {
     test_ping_then_text();
     test_receive_timeout();
     test_peer_close();
+    test_wss_receive();
+    test_wss_rejects_untrusted_certificate();
   } catch (const std::exception& ex) {
     std::cerr << ex.what() << "\n";
     return EXIT_FAILURE;
