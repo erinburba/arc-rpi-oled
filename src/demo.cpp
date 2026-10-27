@@ -1,4 +1,4 @@
-#include "arc/gpio_input.hpp"
+#include "arc/button.hpp"
 #include "arc/i2c_device.hpp"
 #include "arc/i2c_display_transport.hpp"
 #include "arc/ssd1306.hpp"
@@ -12,7 +12,6 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
-#include <thread>
 
 namespace {
 
@@ -22,7 +21,7 @@ void on_signal(int) { g_stop = 1; }
 
 struct Options {
   std::string i2c = "/dev/i2c-1";
-  std::uint8_t address = 0x3C;
+  std::uint8_t address = 0x3D;
   std::string gpiochip = "/dev/gpiochip0";
   std::optional<std::uint32_t> button;
 };
@@ -31,8 +30,9 @@ void print_usage() {
   std::cerr
       << "Usage: oled_demo [--i2c PATH] [--address ADDR] [--gpiochip PATH] [--button [N]]\n"
       << "\n"
-      << "Defaults: --i2c /dev/i2c-1 --address 0x3c\n"
+      << "Defaults: --i2c /dev/i2c-1 --address 0x3d\n"
       << "Without --button the demo draws once and exits. --button uses BCM 23 unless N is set.\n"
+      << "The button is active low with the internal pull-up. A press inverts the display.\n"
       << "On Pi 5 the header is often /dev/gpiochip4.\n";
 }
 
@@ -124,24 +124,18 @@ int main(int argc, char** argv) {
       return EXIT_SUCCESS;
     }
 
-    arc::GpioInput button(options.gpiochip, *options.button, arc::Bias::PullUp, arc::Edge::Falling);
+    arc::Button button({options.gpiochip, *options.button});
     std::signal(SIGINT, on_signal);
     std::signal(SIGTERM, on_signal);
-    std::cout << "Waiting for a falling edge on GPIO " << *options.button << " (Ctrl-C to exit)\n";
+    std::cout << "Waiting for a press on GPIO " << *options.button << " (Ctrl-C to exit)\n";
     bool inverted = false;
     while (g_stop == 0) {
-      const std::optional<arc::Edge> edge = button.wait(std::chrono::milliseconds(200));
-      if (!edge.has_value() || g_stop != 0) {
+      const std::optional<arc::ButtonEvent> event = button.wait(std::chrono::milliseconds(200));
+      if (event != arc::ButtonEvent::Press || g_stop != 0) {
         continue;
       }
       inverted = !inverted;
       display.set_inverted(inverted);
-      std::this_thread::sleep_for(std::chrono::milliseconds(30));
-      for (;;) {
-        if (!button.wait(std::chrono::milliseconds(0)).has_value()) {
-          break;
-        }
-      }
     }
     return EXIT_SUCCESS;
   } catch (const std::invalid_argument& ex) {

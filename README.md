@@ -1,6 +1,6 @@
 # arc-rpi-oled
 
-C++ userspace driver for an SSD1306 128x64 OLED on a Raspberry Pi. This board is driven over I2C at address `0x3C` on `/dev/i2c-1`. The panel framebuffer builds and tests on macOS; the demo binary is built on the Pi.
+C++ userspace driver for an SSD1306 128x64 OLED on a Raspberry Pi. This board is driven over I2C at address `0x3D` on `/dev/i2c-1`. The panel framebuffer builds and tests on macOS; the demo binary is built on the Pi.
 
 ## I2C wiring
 
@@ -18,7 +18,7 @@ sudo usermod -aG i2c "$USER"
 i2cdetect -y 1
 ```
 
-Log in again after changing groups. `0x3c` in the detect grid is this panel. Some modules use `0x3d`.
+Log in again after changing groups. `0x3d` in the detect grid is this panel. Some modules use `0x3c`.
 
 ## SPI wiring
 
@@ -34,7 +34,7 @@ Log in again after changing groups. `0x3c` in the detect grid is this panel. Som
 
 Chip select stays with the spidev driver. Wire CS to CE0. Enable it with `sudo raspi-config nonint do_spi 0` and confirm `/dev/spidev0.0` exists after reboot.
 
-The optional button uses the internal pull-up and is active low. A falling edge inverts the panel. On Pi 5 the header is often `/dev/gpiochip4`. The button needs the `gpio` group.
+The optional button is a switch to ground on BCM 23 (header pin 16). `Button` enables the internal pull-up and treats a low line as pressed. Presses and releases are separate events, accepted after 25 ms, so contact bounce does not repeat them. A press inverts the panel. On Pi 5 the header is often `/dev/gpiochip4`. The button needs the `gpio` group.
 
 ## Build
 
@@ -48,7 +48,7 @@ On the Pi the same commands also build `oled_demo`:
 
 ```bash
 ./build/oled_demo
-./build/oled_demo --address 0x3d
+./build/oled_demo --address 0x3c
 ./build/oled_demo --button
 ```
 
@@ -60,5 +60,5 @@ Without `--button` the program draws a border and a filled block, then exits. `-
 
 ```bash
 python3 scripts/oled_check.py
-python3 scripts/oled_check.py --address 0x3d
+python3 scripts/oled_check.py --address 0x3c
 ```

@@ -11,7 +11,7 @@ class I2cDevice {
  public:
   struct Config {
     std::string device = "/dev/i2c-1";
-    std::uint8_t address = 0x3C;
+    std::uint8_t address = 0x3D;
   };
 
   explicit I2cDevice(Config config);

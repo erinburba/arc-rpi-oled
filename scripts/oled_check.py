@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Light every pixel, then draw a border and OK, over I2C.
 
-Default bus is /dev/i2c-1 and the SSD1306 address is 0x3C.
+Default bus is /dev/i2c-1 and the SSD1306 address is 0x3D.
 Confirm the address with: i2cdetect -y 1
 """
 
@@ -63,7 +63,7 @@ INIT = (
 def parse_args():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--bus", type=int, default=1, help="I2C bus number (default 1)")
-    parser.add_argument("--address", type=lambda text: int(text, 0), default=0x3C, help="7-bit address (default 0x3c)")
+    parser.add_argument("--address", type=lambda text: int(text, 0), default=0x3D, help="7-bit address (default 0x3d)")
     return parser.parse_args()
 
 
@@ -165,7 +165,7 @@ def main():
     except OSError as exc:
         if exc.errno == errno.ENXIO:
             print(
-                f"No device responded at {args.address:#x} on i2c-{args.bus}. Try --address 0x3d.",
+                f"No device responded at {args.address:#x} on i2c-{args.bus}. Try --address 0x3c.",
                 file=sys.stderr,
             )
         else:
