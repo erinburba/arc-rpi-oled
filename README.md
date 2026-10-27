@@ -54,7 +54,17 @@ On the Pi the same commands also build `oled_demo`:
 ./build/oled_demo --buttons 23 22
 ```
 
-Without `--buttons` the program draws a border and a filled block, then exits. `--buttons` waits for the two switches until Ctrl-C.
+Without `--buttons` or `--websocket` the program draws a border and a filled block, then exits. `--buttons` waits for the two switches until Ctrl-C.
+
+## WebSocket
+
+`WebSocketClient` connects to a `ws://` server and returns each text or binary message. Ping frames are answered with pong, and a close from the peer ends the receive loop. `wss://` is not supported.
+
+```bash
+./build/oled_demo --websocket ws://127.0.0.1:8765/oled
+```
+
+Each text message is printed. The panel inverts when a message arrives, until Ctrl-C.
 
 ## Hardware check
 

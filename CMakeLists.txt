@@ -5,16 +5,18 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+find_package(Threads REQUIRED)
+
 add_library(arc_oled
   src/ssd1306.cpp
   src/button_debounce.cpp
+  src/websocket_frame.cpp
+  src/websocket_client.cpp
 )
 target_include_directories(arc_oled PUBLIC include)
 target_compile_options(arc_oled PRIVATE -Wall -Wextra -Wpedantic)
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-  find_package(Threads REQUIRED)
-
   add_library(arc_hw
     src/spi_device.cpp
     src/i2c_device.cpp
@@ -42,3 +44,8 @@ add_executable(button_test tests/button_test.cpp)
 target_link_libraries(button_test PRIVATE arc_oled)
 target_compile_options(button_test PRIVATE -Wall -Wextra -Wpedantic)
 add_test(NAME button_test COMMAND button_test)
+
+add_executable(websocket_test tests/websocket_test.cpp)
+target_link_libraries(websocket_test PRIVATE arc_oled Threads::Threads)
+target_compile_options(websocket_test PRIVATE -Wall -Wextra -Wpedantic)
+add_test(NAME websocket_test COMMAND websocket_test)
