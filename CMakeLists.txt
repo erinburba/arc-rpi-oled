@@ -24,11 +24,11 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     src/i2c_display_transport.cpp
   )
   target_include_directories(arc_hw PUBLIC include)
-  target_link_libraries(arc_hw PUBLIC Threads::Threads)
+  target_link_libraries(arc_hw PUBLIC arc_oled Threads::Threads)
   target_compile_options(arc_hw PRIVATE -Wall -Wextra -Wpedantic)
 
   add_executable(oled_demo src/demo.cpp)
-  target_link_libraries(oled_demo PRIVATE arc_oled arc_hw)
+  target_link_libraries(oled_demo PRIVATE arc_hw)
   target_compile_options(oled_demo PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
