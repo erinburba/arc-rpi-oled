@@ -35,6 +35,8 @@ class GpioInput {
 
   bool get() const;
   std::optional<Edge> wait(std::chrono::milliseconds timeout) const;
+  // One queued rising or falling event. nullopt when the queue is empty.
+  std::optional<Edge> read_edge() const;
   int poll_fd() const;
 
  private:

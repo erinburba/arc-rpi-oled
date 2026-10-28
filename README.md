@@ -35,7 +35,7 @@ Log in again after changing groups. `0x3d` in the detect grid is this panel. Som
 
 Chip select stays with the spidev driver. Wire CS to CE0. Enable it with `sudo raspi-config nonint do_spi 0` and confirm `/dev/spidev0.0` exists after reboot.
 
-The optional buttons are switches to ground. `Button` enables the internal pull-up on each line and treats a low line as pressed. Presses and releases are separate events, accepted after 25 ms, so contact bounce does not repeat them. A press on BCM 23 inverts the panel. A press on BCM 22 toggles the filled block. On Pi 5 the header is often `/dev/gpiochip4`. The buttons need the `gpio` group.
+The optional buttons are switches to ground. `Button` enables the internal pull-up on each line and requests an interrupt on both rising and falling edges. A level is accepted after 25 ms, so contact bounce does not repeat it. The interrupt updates the display state: holding BCM 23 inverts the panel, and holding BCM 22 shows the filled block. Releasing a button clears that choice. On Pi 5 the header is often `/dev/gpiochip4`. The buttons need the `gpio` group.
 
 ## Build
 
@@ -61,7 +61,7 @@ On the Pi the same commands also build `oled_demo`:
 ./build/oled_demo --buttons 23 22
 ```
 
-Without `--buttons` or `--api` the program draws once and exits. The default picture is a border and a filled block. `--text` draws that string instead, wrapping onto the next line at the right edge. `--buttons` waits for the two switches until Ctrl-C.
+Without `--buttons` or `--api` the program draws once and exits. The default picture is a border and a filled block. `--text` draws that string instead, wrapping onto the next line at the right edge. `--buttons` watches both edges until Ctrl-C. The edge thread writes the display state, and the main thread redraws from it.
 
 ## API poll
 

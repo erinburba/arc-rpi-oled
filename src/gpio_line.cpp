@@ -133,6 +133,14 @@ GpioInput::GpioInput(std::string chip_path, std::uint32_t offset, Bias bias, Edg
   gpio_v2_line_config config{};
   config.flags = input_flags(bias, edge);
   fd_ = request_line(chip_path, offset, config);
+  if (edge_ != Edge::None) {
+    const int flags = ::fcntl(fd_, F_GETFL);
+    if (flags < 0 || ::fcntl(fd_, F_SETFL, flags | O_NONBLOCK) < 0) {
+      const int err = errno;
+      close_fd();
+      throw_error(err, "GPIO set nonblocking");
+    }
+  }
 }
 
 GpioInput::~GpioInput() { close_fd(); }
@@ -194,11 +202,21 @@ std::optional<Edge> GpioInput::wait(std::chrono::milliseconds timeout) const {
   if (ready == 0) {
     return std::nullopt;
   }
+  return read_edge();
+}
+
+std::optional<Edge> GpioInput::read_edge() const {
+  if (edge_ == Edge::None) {
+    throw std::logic_error("GpioInput::read_edge requires an edge");
+  }
+  if (fd_ < 0) {
+    throw std::logic_error("read on a moved-from GPIO input");
+  }
 
   gpio_v2_line_event event{};
   const ssize_t n = ::read(fd_, &event, sizeof(event));
   if (n < 0) {
-    if (errno == EINTR) {
+    if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) {
       return std::nullopt;
     }
     const int err = errno;

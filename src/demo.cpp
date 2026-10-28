@@ -7,11 +7,13 @@
 
 #include <algorithm>
 #include <chrono>
+#include <condition_variable>
 #include <csignal>
 #include <cstdint>
 #include <cstdlib>
 #include <iostream>
 #include <limits>
+#include <mutex>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -45,7 +47,8 @@ void print_usage() {
       << "--text draws that string, wrapping at the right edge.\n"
       << "--buttons uses BCM 23 and BCM 22 unless two GPIO numbers are given.\n"
       << "Both buttons are active low with the internal pull-up.\n"
-      << "A press on the first inverts the display. A press on the second toggles the block.\n"
+      << "Rising and falling edges update the display state. Holding the first\n"
+      << "inverts the panel. Holding the second shows the block.\n"
       << "--api polls a JSON document every 2 seconds. A changed document is printed\n"
       << "and drawn on the panel. https:// checks the server certificate.\n"
       << "--ca adds a PEM trust anchor.\n"
@@ -228,25 +231,34 @@ int main(int argc, char** argv) {
     }
     std::signal(SIGINT, on_signal);
     std::signal(SIGTERM, on_signal);
-    std::cout << "Waiting for presses on GPIO " << options.buttons[0] << " and " << options.buttons[1]
-              << " (Ctrl-C to exit)\n";
-    bool inverted = false;
+    arc::PanelState state;
+    state.show_block = show_block;
+    std::mutex state_mu;
+    std::condition_variable state_cv;
+    bool dirty = false;
+    arc::ButtonMonitor monitor(buttons, [&](std::size_t index, arc::ButtonEvent event) {
+      std::lock_guard lock(state_mu);
+      if (arc::apply_button_edge(index, event, state)) {
+        dirty = true;
+        state_cv.notify_one();
+      }
+    });
+    std::cout << "Watching rising and falling edges on GPIO " << options.buttons[0] << " and "
+              << options.buttons[1] << " (Ctrl-C to exit)\n";
     while (g_stop == 0) {
-      const std::optional<arc::IdentifiedButtonEvent> event =
-          arc::wait_any(buttons, std::chrono::milliseconds(200));
-      if (!event.has_value() || event->event != arc::ButtonEvent::Press || g_stop != 0) {
-        continue;
-      }
-      if (event->index == 0) {
-        inverted = !inverted;
-        display.set_inverted(inverted);
-      } else {
-        show_block = !show_block;
-        draw(display, show_block, options.text);
-        if (inverted) {
-          display.set_inverted(true);
+      monitor.rethrow_if_error();
+      arc::PanelState snapshot;
+      {
+        std::unique_lock lock(state_mu);
+        state_cv.wait_for(lock, std::chrono::milliseconds(200), [&] { return dirty; });
+        if (!dirty || g_stop != 0) {
+          continue;
         }
+        snapshot = state;
+        dirty = false;
       }
+      draw(display, snapshot.show_block, options.text);
+      display.set_inverted(snapshot.inverted);
     }
     return EXIT_SUCCESS;
   } catch (const std::invalid_argument& ex) {

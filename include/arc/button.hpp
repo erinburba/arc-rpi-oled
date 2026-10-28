@@ -2,12 +2,17 @@
 
 #include "arc/gpio_input.hpp"
 
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <exception>
+#include <functional>
+#include <mutex>
 #include <optional>
 #include <span>
 #include <string>
+#include <thread>
 
 namespace arc {
 
@@ -20,6 +25,16 @@ struct IdentifiedButtonEvent {
   std::size_t index = 0;
   ButtonEvent event = ButtonEvent::Press;
 };
+
+// What the panel is showing. Button edges write these; drawing reads them.
+struct PanelState {
+  bool inverted = false;
+  bool show_block = true;
+};
+
+// Button 0 selects invert while it is held. Button 1 selects the filled block
+// while it is held. A release clears that choice. Returns true when state changes.
+bool apply_button_edge(std::size_t index, ButtonEvent event, PanelState& state);
 
 // A button wired to ground is active low: the line reads low while it is held.
 inline bool level_is_pressed(bool line_high, bool active_low) {
@@ -70,8 +85,10 @@ class Button {
   friend std::optional<IdentifiedButtonEvent> wait_any(std::span<Button> buttons,
                                                        std::chrono::milliseconds timeout);
 
+  friend class ButtonMonitor;
+
   int poll_fd() const;
-  void consume_edge();
+  void drain_edges();
   std::optional<ButtonEvent> observe_now();
   std::chrono::milliseconds debounce_interval() const;
 
@@ -85,5 +102,30 @@ class Button {
 // Wait until one button emits a debounced press or release. index matches the span order.
 std::optional<IdentifiedButtonEvent> wait_any(std::span<Button> buttons,
                                                std::chrono::milliseconds timeout);
+
+// Blocks in poll on each button's GPIO edge file. The line is armed for rising
+// and falling edges. A debounced press or release runs handler on this thread.
+class ButtonMonitor {
+ public:
+  using Handler = std::function<void(std::size_t index, ButtonEvent event)>;
+
+  ButtonMonitor(std::span<Button> buttons, Handler handler);
+  ~ButtonMonitor();
+
+  ButtonMonitor(const ButtonMonitor&) = delete;
+  ButtonMonitor& operator=(const ButtonMonitor&) = delete;
+
+  void rethrow_if_error();
+
+ private:
+  void run();
+
+  std::span<Button> buttons_;
+  Handler handler_;
+  std::atomic<bool> stop_{false};
+  std::mutex error_mu_;
+  std::exception_ptr error_;
+  std::thread thread_;
+};
 
 }  // namespace arc

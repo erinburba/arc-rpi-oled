@@ -60,6 +60,28 @@ void test_bounce_is_ignored() {
   EXPECT(debounce.pressed());
 }
 
+void test_edges_update_panel_state() {
+  arc::PanelState state;
+  EXPECT(!state.inverted);
+  EXPECT(state.show_block);
+
+  EXPECT(arc::apply_button_edge(0, arc::ButtonEvent::Press, state));
+  EXPECT(state.inverted);
+  EXPECT(!arc::apply_button_edge(0, arc::ButtonEvent::Press, state));
+
+  EXPECT(arc::apply_button_edge(0, arc::ButtonEvent::Release, state));
+  EXPECT(!state.inverted);
+
+  EXPECT(!arc::apply_button_edge(1, arc::ButtonEvent::Press, state));
+  EXPECT(state.show_block);
+  EXPECT(arc::apply_button_edge(1, arc::ButtonEvent::Release, state));
+  EXPECT(!state.show_block);
+  EXPECT(!state.inverted);
+
+  EXPECT(!arc::apply_button_edge(2, arc::ButtonEvent::Press, state));
+  EXPECT(!state.show_block);
+}
+
 void test_initial_press_can_release() {
   arc::ButtonDebounce debounce(std::chrono::milliseconds(20), true);
   EXPECT(debounce.pressed());
@@ -75,6 +97,7 @@ int main() {
   test_active_level();
   test_press_and_release();
   test_bounce_is_ignored();
+  test_edges_update_panel_state();
   test_initial_press_can_release();
   if (g_failures != 0) {
     std::cerr << g_failures << " failure(s)\n";
