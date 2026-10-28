@@ -136,11 +136,19 @@ Options parse_args(int argc, char** argv) {
   return options;
 }
 
+constexpr int kReconnectAfterFailures = 5;
+
 void draw_coordinates(arc::Ssd1306& display, const std::string& latitude, const std::string& longitude) {
   display.clear();
   display.draw_text(0, 5, "ISS coordinates:");
   display.draw_text(0, 30, latitude.empty() ? "..." : latitude);
   display.draw_text(0, 50, longitude.empty() ? "..." : longitude);
+  display.flush();
+}
+
+void draw_reconnecting(arc::Ssd1306& display) {
+  display.clear();
+  display.draw_text(0, 28, "Reconnecting...");
   display.flush();
 }
 
@@ -193,6 +201,8 @@ int main(int argc, char** argv) {
     std::string latitude;
     std::string longitude;
     bool coordinates_dirty = false;
+    int consecutive_failures = 0;
+    bool reconnecting = false;
     arc::ButtonMonitor monitor(buttons, [&](std::size_t index, arc::ButtonEvent event) {
       std::lock_guard lock(state_mu);
       if (arc::apply_button_edge(index, event, state)) {
@@ -202,6 +212,34 @@ int main(int argc, char** argv) {
     });
     std::atomic<bool> poll_stop{false};
     std::thread poll_thread([&] {
+      auto note_failure = [&] {
+        std::lock_guard lock(state_mu);
+        if (consecutive_failures < kReconnectAfterFailures) {
+          ++consecutive_failures;
+        }
+        if (consecutive_failures >= kReconnectAfterFailures && !reconnecting) {
+          reconnecting = true;
+          coordinates_dirty = true;
+          state_cv.notify_one();
+        }
+      };
+      auto note_success = [&](std::string next_latitude, std::string next_longitude) {
+        std::lock_guard lock(state_mu);
+        const bool recovered = reconnecting;
+        consecutive_failures = 0;
+        reconnecting = false;
+        const bool changed = next_latitude != latitude || next_longitude != longitude;
+        if (changed) {
+          latitude = std::move(next_latitude);
+          longitude = std::move(next_longitude);
+          std::cout << latitude << "\n" << longitude << "\n";
+          std::cout.flush();
+        }
+        if (changed || recovered) {
+          coordinates_dirty = true;
+          state_cv.notify_one();
+        }
+      };
       while (!poll_stop.load() && g_stop == 0) {
         const auto started = std::chrono::steady_clock::now();
         try {
@@ -211,24 +249,16 @@ int main(int argc, char** argv) {
           }
           if (response.status != 200) {
             std::cerr << "HTTP " << response.status << "\n";
+            note_failure();
           } else {
             const arc::Json json_obj = arc::Json::parse(response.body);
             const arc::Json* latitude_value = json_obj.find("latitude");
             const arc::Json* longitude_value = json_obj.find("longitude");
             if (latitude_value == nullptr || longitude_value == nullptr) {
               std::cerr << "missing coordinates\n";
+              note_failure();
             } else {
-              std::string next_latitude = latitude_value->dump();
-              std::string next_longitude = longitude_value->dump();
-              std::lock_guard lock(state_mu);
-              if (next_latitude != latitude || next_longitude != longitude) {
-                latitude = std::move(next_latitude);
-                longitude = std::move(next_longitude);
-                coordinates_dirty = true;
-                state_cv.notify_one();
-                std::cout << latitude << "\n" << longitude << "\n";
-                std::cout.flush();
-              }
+              note_success(latitude_value->dump(), longitude_value->dump());
             }
           }
         } catch (const std::exception& ex) {
@@ -236,6 +266,7 @@ int main(int argc, char** argv) {
             break;
           }
           std::cerr << ex.what() << "\n";
+          note_failure();
         }
         const auto elapsed = std::chrono::steady_clock::now() - started;
         if (elapsed < arc::kApiPollPeriod) {
@@ -263,6 +294,7 @@ int main(int argc, char** argv) {
       arc::PanelState snapshot;
       std::string shown_latitude;
       std::string shown_longitude;
+      bool shown_reconnecting = false;
       bool buttons_changed = false;
       bool coordinates_changed = false;
       {
@@ -277,6 +309,7 @@ int main(int argc, char** argv) {
         snapshot = state;
         shown_latitude = latitude;
         shown_longitude = longitude;
+        shown_reconnecting = reconnecting;
         buttons_changed = dirty;
         coordinates_changed = coordinates_dirty;
         dirty = false;
@@ -293,7 +326,11 @@ int main(int argc, char** argv) {
       } else if (snapshot.show_feed) {
         display.set_fault(false);
         if (buttons_changed || coordinates_changed) {
-          draw_coordinates(display, shown_latitude, shown_longitude);
+          if (shown_reconnecting) {
+            draw_reconnecting(display);
+          } else {
+            draw_coordinates(display, shown_latitude, shown_longitude);
+          }
         }
       } else if (buttons_changed) {
         display.set_fault(false);
