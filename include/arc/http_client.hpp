@@ -9,7 +9,7 @@
 namespace arc {
 
 // Time from the start of one poll to the start of the next.
-inline constexpr std::chrono::seconds kApiPollPeriod{2};
+inline constexpr std::chrono::seconds kApiPollPeriod{1};
 
 inline constexpr std::size_t kMaxHttpBody = 1024 * 1024;
 

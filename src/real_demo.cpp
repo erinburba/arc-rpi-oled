@@ -182,9 +182,14 @@ int main(int argc, char** argv) {
     }
     arc::PanelState state;
     state.show_feed = false;
+    for (std::size_t index = 0; index < buttons.size(); ++index) {
+      const arc::ButtonEvent event =
+          buttons[index].pressed() ? arc::ButtonEvent::Press : arc::ButtonEvent::Release;
+      arc::apply_button_edge(index, event, state);
+    }
     std::mutex state_mu;
     std::condition_variable state_cv;
-    bool dirty = false;
+    bool dirty = state.fault || state.show_feed;
     std::string latitude;
     std::string longitude;
     bool coordinates_dirty = false;
@@ -250,7 +255,9 @@ int main(int argc, char** argv) {
     std::cout << "Polling " << (endpoint.tls ? "https://" : "http://") << endpoint.host << ":" << endpoint.port
               << endpoint.target << " every 2 seconds (Ctrl-C to exit)\n";
 
-    display.clear_window();
+    if (!state.fault && !state.show_feed) {
+      display.clear_window();
+    }
     while (g_stop == 0) {
       monitor.rethrow_if_error();
       arc::PanelState snapshot;
@@ -280,7 +287,7 @@ int main(int argc, char** argv) {
         display.set_fault(true);
         if (buttons_changed) {
           display.clear();
-          display.draw_text(100, 40, "ERROR");
+          display.draw_text(10, 10, "!! ERROR !!");
           display.flush();
         }
       } else if (snapshot.show_feed) {
