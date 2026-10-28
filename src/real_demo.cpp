@@ -6,13 +6,15 @@
 #include "arc/ssd1306.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <csignal>
 #include <cstdint>
 #include <cstdlib>
-#include <condition_variable>
 #include <iostream>
 #include <limits>
+#include <mutex>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -134,21 +136,27 @@ Options parse_args(int argc, char** argv) {
   return options;
 }
 
-void draw(arc::Ssd1306& display, bool show_feed) {
+void draw_coordinates(arc::Ssd1306& display, const std::string& latitude, const std::string& longitude) {
   display.clear();
-  for (int x = 0; x < arc::Ssd1306::kWidth; ++x) {
-    display.set_pixel(x, 0, true);
-    display.set_pixel(x, arc::Ssd1306::kHeight - 1, true);
-  }
-  for (int y = 0; y < arc::Ssd1306::kHeight; ++y) {
-    display.set_pixel(0, y, true);
-    display.set_pixel(arc::Ssd1306::kWidth - 1, y, true);
-  }
-  if (show_feed) {
-    display.fill_rect(10, 10, 20, 16, true);
-  }
+  display.draw_text(0, 5, "ISS coordinates:");
+  display.draw_text(0, 30, latitude.empty() ? "..." : latitude);
+  display.draw_text(0, 50, longitude.empty() ? "..." : longitude);
   display.flush();
 }
+
+struct PollStop {
+  std::atomic<bool>* stop = nullptr;
+  std::thread* thread = nullptr;
+
+  ~PollStop() {
+    if (stop != nullptr) {
+      stop->store(true);
+    }
+    if (thread != nullptr && thread->joinable()) {
+      thread->join();
+    }
+  }
+};
 
 }  // namespace
 
@@ -173,94 +181,117 @@ int main(int argc, char** argv) {
       buttons.emplace_back(arc::Button::Config{options.gpiochip, pin});
     }
     arc::PanelState state;
+    state.show_feed = false;
     std::mutex state_mu;
     std::condition_variable state_cv;
     bool dirty = false;
+    std::string latitude;
+    std::string longitude;
+    bool coordinates_dirty = false;
     arc::ButtonMonitor monitor(buttons, [&](std::size_t index, arc::ButtonEvent event) {
-        std::lock_guard lock(state_mu);
-        if (arc::apply_button_edge(index, event, state)) {
-            dirty = true;
-            state_cv.notify_one();
-        }
+      std::lock_guard lock(state_mu);
+      if (arc::apply_button_edge(index, event, state)) {
+        dirty = true;
+        state_cv.notify_one();
+      }
     });
+    std::atomic<bool> poll_stop{false};
+    std::thread poll_thread([&] {
+      while (!poll_stop.load() && g_stop == 0) {
+        const auto started = std::chrono::steady_clock::now();
+        try {
+          const arc::HttpResponse response = client.get();
+          if (poll_stop.load() || g_stop != 0) {
+            break;
+          }
+          if (response.status != 200) {
+            std::cerr << "HTTP " << response.status << "\n";
+          } else {
+            const arc::Json json_obj = arc::Json::parse(response.body);
+            const arc::Json* latitude_value = json_obj.find("latitude");
+            const arc::Json* longitude_value = json_obj.find("longitude");
+            if (latitude_value == nullptr || longitude_value == nullptr) {
+              std::cerr << "missing coordinates\n";
+            } else {
+              std::string next_latitude = latitude_value->dump();
+              std::string next_longitude = longitude_value->dump();
+              std::lock_guard lock(state_mu);
+              if (next_latitude != latitude || next_longitude != longitude) {
+                latitude = std::move(next_latitude);
+                longitude = std::move(next_longitude);
+                coordinates_dirty = true;
+                state_cv.notify_one();
+                std::cout << latitude << "\n" << longitude << "\n";
+                std::cout.flush();
+              }
+            }
+          }
+        } catch (const std::exception& ex) {
+          if (poll_stop.load() || g_stop != 0) {
+            break;
+          }
+          std::cerr << ex.what() << "\n";
+        }
+        const auto elapsed = std::chrono::steady_clock::now() - started;
+        if (elapsed < arc::kApiPollPeriod) {
+          auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(arc::kApiPollPeriod - elapsed);
+          while (!poll_stop.load() && g_stop == 0 && remaining.count() > 0) {
+            const auto slice = std::min(remaining, std::chrono::milliseconds(200));
+            std::this_thread::sleep_for(slice);
+            remaining -= slice;
+          }
+        }
+      }
+    });
+    PollStop poll_join{&poll_stop, &poll_thread};
     std::cout << "Buttons established\n";
-    
     std::cout << "Waiting for presses on GPIO " << options.buttons[0] << " and " << options.buttons[1]
               << " (Ctrl-C to exit)\n";
-    bool fault = false;
-
     std::cout << "Polling " << (endpoint.tls ? "https://" : "http://") << endpoint.host << ":" << endpoint.port
               << endpoint.target << " every 2 seconds (Ctrl-C to exit)\n";
 
-    std::string previous;
+    display.clear_window();
     while (g_stop == 0) {
-
-        monitor.rethrow_if_error();
-        arc::PanelState snapshot;
-        {
-            std::unique_lock lock(state_mu);
-            state_cv.wait_for(lock, std::chrono::milliseconds(200), [&] { return dirty; });
-            if (!dirty || g_stop != 0) {
-                continue;
-            }
-            snapshot = state;
-            dirty = false;
+      monitor.rethrow_if_error();
+      arc::PanelState snapshot;
+      std::string shown_latitude;
+      std::string shown_longitude;
+      bool buttons_changed = false;
+      bool coordinates_changed = false;
+      {
+        std::unique_lock lock(state_mu);
+        state_cv.wait_for(lock, std::chrono::milliseconds(200), [&] { return dirty || coordinates_dirty; });
+        if (g_stop != 0) {
+          break;
         }
-        
-        display.set_fault(snapshot.fault);
-        
-        if (snapshot.fault) {
+        if (!dirty && !coordinates_dirty) {
+          continue;
+        }
+        snapshot = state;
+        shown_latitude = latitude;
+        shown_longitude = longitude;
+        buttons_changed = dirty;
+        coordinates_changed = coordinates_dirty;
+        dirty = false;
+        coordinates_dirty = false;
+      }
+
+      if (snapshot.fault) {
+        display.set_fault(true);
+        if (buttons_changed) {
           display.clear();
           display.draw_text(100, 40, "ERROR");
           display.flush();
-        } else if (snapshot.show_feed) {
-            const auto started = std::chrono::steady_clock::now();
-            try {
-                const arc::HttpResponse response = client.get();
-                if (g_stop != 0) {
-                  break;
-                }
-                if (response.status != 200) {
-                  std::cerr << "HTTP " << response.status << "\n";
-                  previous.clear();
-                } else {
-                  const arc::Json json_obj = arc::Json::parse(response.body);
-                  const std::string rendered = json_obj.dump();
-                  if (rendered != previous) {
-                      previous = rendered;
-                      const std::string latitude = json_obj.find("latitude")->dump();
-                      const std::string longitude = json_obj.find("longitude")->dump();
-                      std::cout << latitude << "\n";
-                      std::cout << longitude << "\n";
-                      display.clear();
-                      display.draw_text(0, 5, "ISS coordinates:");
-                      display.draw_text(0, 30, latitude);
-                      display.draw_text(0, 50, longitude);
-                      display.flush();
-                      std::cout.flush();
-                  }
-                }
-            } catch (const std::exception& ex) {
-                if (g_stop != 0) {
-                break;
-                }
-                previous.clear();
-                std::cerr << ex.what() << "\n";
-            }
-            const auto elapsed = std::chrono::steady_clock::now() - started;
-            if (elapsed < arc::kApiPollPeriod) {
-                auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(arc::kApiPollPeriod - elapsed);
-                while (g_stop == 0 && remaining.count() > 0) {
-                const auto slice = std::min(remaining, std::chrono::milliseconds(200));
-                std::this_thread::sleep_for(slice);
-                remaining -= slice;
-                }
-            }
-        } else {
-            display.clear();
-            display.flush();
         }
-      
+      } else if (snapshot.show_feed) {
+        display.set_fault(false);
+        if (buttons_changed || coordinates_changed) {
+          draw_coordinates(display, shown_latitude, shown_longitude);
+        }
+      } else if (buttons_changed) {
+        display.set_fault(false);
+        display.clear_window();
+      }
     }
     return EXIT_SUCCESS;
   } catch (const std::invalid_argument& ex) {
