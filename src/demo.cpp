@@ -134,7 +134,7 @@ Options parse_args(int argc, char** argv) {
   return options;
 }
 
-void draw(arc::Ssd1306& display, bool show_block, const std::optional<std::string>& text) {
+void draw(arc::Ssd1306& display, bool show_feed, const std::optional<std::string>& text) {
   display.clear();
   if (text.has_value()) {
     display.draw_text(0, 0, *text);
@@ -147,7 +147,7 @@ void draw(arc::Ssd1306& display, bool show_block, const std::optional<std::strin
       display.set_pixel(0, y, true);
       display.set_pixel(arc::Ssd1306::kWidth - 1, y, true);
     }
-    if (show_block) {
+    if (show_feed) {
       display.fill_rect(10, 10, 20, 16, true);
     }
   }
@@ -163,8 +163,8 @@ int main(int argc, char** argv) {
     arc::I2cDisplayTransport transport(i2c);
     arc::Ssd1306 display(transport);
     display.init();
-    bool show_block = true;
-    draw(display, show_block, options.text);
+    bool show_feed = true;
+    draw(display, show_feed, options.text);
     if (options.text.has_value()) {
       std::cout << "Drew text\n";
     } else {
@@ -232,7 +232,7 @@ int main(int argc, char** argv) {
     std::signal(SIGINT, on_signal);
     std::signal(SIGTERM, on_signal);
     arc::PanelState state;
-    state.show_block = show_block;
+    state.show_feed = show_feed;
     std::mutex state_mu;
     std::condition_variable state_cv;
     bool dirty = false;
@@ -257,8 +257,8 @@ int main(int argc, char** argv) {
         snapshot = state;
         dirty = false;
       }
-      draw(display, snapshot.show_block, options.text);
-      display.set_inverted(snapshot.inverted);
+      draw(display, snapshot.show_feed, options.text);
+      display.set_fault(snapshot.fault);
     }
     return EXIT_SUCCESS;
   } catch (const std::invalid_argument& ex) {

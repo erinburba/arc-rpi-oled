@@ -33,8 +33,8 @@ struct IdentifiedButtonEvent {
 
 // What the panel is showing. Button edges write these; drawing reads them.
 struct PanelState {
-  bool inverted = false;
-  bool show_block = true;
+  bool fault = false;
+  bool show_feed = true;
 };
 
 // Button 0 selects invert while it is held. Button 1 selects the filled block

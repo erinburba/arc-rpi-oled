@@ -62,24 +62,24 @@ void test_bounce_is_ignored() {
 
 void test_edges_update_panel_state() {
   arc::PanelState state;
-  EXPECT(!state.inverted);
-  EXPECT(state.show_block);
+  EXPECT(!state.fault);
+  EXPECT(state.show_feed);
 
   EXPECT(arc::apply_button_edge(0, arc::ButtonEvent::Press, state));
-  EXPECT(state.inverted);
+  EXPECT(state.fault);
   EXPECT(!arc::apply_button_edge(0, arc::ButtonEvent::Press, state));
 
   EXPECT(arc::apply_button_edge(0, arc::ButtonEvent::Release, state));
-  EXPECT(!state.inverted);
+  EXPECT(!state.fault);
 
   EXPECT(!arc::apply_button_edge(1, arc::ButtonEvent::Press, state));
-  EXPECT(state.show_block);
+  EXPECT(state.show_feed);
   EXPECT(arc::apply_button_edge(1, arc::ButtonEvent::Release, state));
-  EXPECT(!state.show_block);
-  EXPECT(!state.inverted);
+  EXPECT(!state.show_feed);
+  EXPECT(!state.fault);
 
   EXPECT(!arc::apply_button_edge(2, arc::ButtonEvent::Press, state));
-  EXPECT(!state.show_block);
+  EXPECT(!state.show_feed);
 }
 
 void test_initial_press_can_release() {

@@ -160,8 +160,8 @@ void test_flush_and_invert() {
   EXPECT((transport.commands[0] == std::vector<std::uint8_t>{0x21, 0x00, 127}));
   EXPECT((transport.commands[1] == std::vector<std::uint8_t>{0x22, 0x00, 0x07}));
 
-  display.set_inverted(true);
-  display.set_inverted(false);
+  display.set_fault(true);
+  display.set_fault(false);
   EXPECT(transport.commands.size() == 4);
   EXPECT((transport.commands[2] == std::vector<std::uint8_t>{0xA7}));
   EXPECT((transport.commands[3] == std::vector<std::uint8_t>{0xA6}));

@@ -31,9 +31,9 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   target_link_libraries(arc_hw PUBLIC arc_oled Threads::Threads)
   target_compile_options(arc_hw PRIVATE -Wall -Wextra -Wpedantic)
 
-  add_executable(oled_demo src/demo.cpp)
-  target_link_libraries(oled_demo PRIVATE arc_hw)
-  target_compile_options(oled_demo PRIVATE -Wall -Wextra -Wpedantic)
+  add_executable(full_demo src/real_demo.cpp)
+  target_link_libraries(full_demo PRIVATE arc_hw)
+  target_compile_options(full_demo PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
 enable_testing()

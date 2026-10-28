@@ -31,7 +31,7 @@ class Ssd1306 {
   // panel are clipped.
   void draw_text(int x, int y, std::string_view text);
   void flush();
-  void set_inverted(bool inverted);
+  void set_fault(bool fault);
 
  private:
   DisplayTransport& transport_;

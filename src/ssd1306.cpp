@@ -178,8 +178,8 @@ void Ssd1306::flush() {
   transport_.write_data(buffer_);
 }
 
-void Ssd1306::set_inverted(bool inverted) {
-  const std::uint8_t command_byte[] = {inverted ? std::uint8_t{0xA7} : std::uint8_t{0xA6}};
+void Ssd1306::set_fault(bool fault) {
+  const std::uint8_t command_byte[] = {fault ? std::uint8_t{0xA7} : std::uint8_t{0xA6}};
   command(command_byte);
 }
 
