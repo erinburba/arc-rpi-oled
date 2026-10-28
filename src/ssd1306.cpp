@@ -108,6 +108,11 @@ void Ssd1306::init() {
 
 void Ssd1306::clear() { buffer_.fill(0); }
 
+void Ssd1306::clear_window() {
+  clear();
+  flush();
+}
+
 void Ssd1306::set_pixel(int x, int y, bool on) {
   if (x < 0 || y < 0 || x >= kWidth || y >= kHeight) {
     throw std::out_of_range("pixel is outside the 128x64 panel");

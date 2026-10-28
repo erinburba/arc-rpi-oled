@@ -22,6 +22,8 @@ class Ssd1306 {
 
   void init();
   void clear();
+  // Blank the framebuffer and write it to the panel.
+  void clear_window();
   void set_pixel(int x, int y, bool on);
   void fill_rect(int x, int y, int width, int height, bool on);
   // 5x7 ASCII. Glyphs are 6 pixels apart and lines are 8 pixels apart.

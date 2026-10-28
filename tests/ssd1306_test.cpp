@@ -127,6 +127,29 @@ void test_draw_text() {
   EXPECT(pixel_on(transport, 0, 9));
 }
 
+void test_clear_window() {
+  RecordingTransport transport;
+  arc::Ssd1306 display(transport);
+  display.set_pixel(0, 0, true);
+  display.set_pixel(127, 63, true);
+  display.clear_window();
+
+  EXPECT(transport.data_writes == 1);
+  EXPECT(transport.data.size() == arc::Ssd1306::kBufferSize);
+  for (const std::uint8_t byte : transport.data) {
+    EXPECT(byte == 0);
+  }
+  EXPECT(transport.commands.size() == 2);
+  EXPECT((transport.commands[0] == std::vector<std::uint8_t>{0x21, 0x00, 127}));
+  EXPECT((transport.commands[1] == std::vector<std::uint8_t>{0x22, 0x00, 0x07}));
+
+  display.flush();
+  EXPECT(transport.data_writes == 2);
+  for (const std::uint8_t byte : transport.data) {
+    EXPECT(byte == 0);
+  }
+}
+
 void test_flush_and_invert() {
   RecordingTransport transport;
   arc::Ssd1306 display(transport);
@@ -151,6 +174,7 @@ int main() {
   test_out_of_range();
   test_init_commands();
   test_draw_text();
+  test_clear_window();
   test_flush_and_invert();
   if (g_failures != 0) {
     std::cerr << g_failures << " failure(s)\n";
