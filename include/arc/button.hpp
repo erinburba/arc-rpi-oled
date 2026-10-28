@@ -14,6 +14,11 @@
 #include <string>
 #include <thread>
 
+#define FAULT_BUTTON 23
+#define FEED_BUTTON 22
+#define FAULT_BUTTON_INDEX 0
+#define FEED_BUTTON_INDEX 1
+
 namespace arc {
 
 enum class ButtonEvent {

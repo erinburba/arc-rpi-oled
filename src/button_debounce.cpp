@@ -13,14 +13,14 @@ ButtonDebounce::ButtonDebounce(std::chrono::milliseconds interval, bool initiall
 
 bool apply_button_edge(std::size_t index, ButtonEvent event, PanelState& state) {
   const bool pressed = event == ButtonEvent::Press;
-  if (index == 0) {
+  if (index == FAULT_BUTTON_INDEX) {
     if (state.inverted == pressed) {
       return false;
     }
     state.inverted = pressed;
     return true;
   }
-  if (index == 1) {
+  if (index == FEED_BUTTON_INDEX) {
     if (state.show_block == pressed) {
       return false;
     }
