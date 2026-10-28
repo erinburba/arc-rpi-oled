@@ -103,6 +103,30 @@ void test_init_commands() {
   EXPECT(transport.commands == expected);
 }
 
+bool pixel_on(const RecordingTransport& transport, int x, int y) {
+  const auto bit = static_cast<std::uint8_t>(1u << (y % 8));
+  return (pixel_byte(transport, x, y) & bit) != 0;
+}
+
+void test_draw_text() {
+  RecordingTransport transport;
+  arc::Ssd1306 display(transport);
+  display.draw_text(0, 0, "A");
+  display.flush();
+  EXPECT(!pixel_on(transport, 0, 0));
+  EXPECT(pixel_on(transport, 0, 1));
+  EXPECT(pixel_on(transport, 1, 0));
+  EXPECT(pixel_on(transport, 1, 4));
+  EXPECT(!pixel_on(transport, 5, 1));
+
+  display.clear();
+  display.draw_text(126, 62, "A");
+  display.draw_text(0, 0, "HI\nOK");
+  display.flush();
+  EXPECT(pixel_on(transport, 0, 1));
+  EXPECT(pixel_on(transport, 0, 9));
+}
+
 void test_flush_and_invert() {
   RecordingTransport transport;
   arc::Ssd1306 display(transport);
@@ -126,6 +150,7 @@ int main() {
   test_pixel_packing();
   test_out_of_range();
   test_init_commands();
+  test_draw_text();
   test_flush_and_invert();
   if (g_failures != 0) {
     std::cerr << g_failures << " failure(s)\n";

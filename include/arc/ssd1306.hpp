@@ -5,6 +5,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <string_view>
 
 namespace arc {
 
@@ -23,6 +24,10 @@ class Ssd1306 {
   void clear();
   void set_pixel(int x, int y, bool on);
   void fill_rect(int x, int y, int width, int height, bool on);
+  // 5x7 ASCII. Glyphs are 6 pixels apart and lines are 8 pixels apart.
+  // Text wraps at the right edge and stops at the bottom. Pixels past the
+  // panel are clipped.
+  void draw_text(int x, int y, std::string_view text);
   void flush();
   void set_inverted(bool inverted);
 

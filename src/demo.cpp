@@ -31,20 +31,23 @@ struct Options {
   std::vector<std::uint32_t> buttons;
   std::optional<arc::HttpRequest> api;
   std::string ca_file;
+  std::optional<std::string> text;
 };
 
 void print_usage() {
   std::cerr
       << "Usage: oled_demo [--i2c PATH] [--address ADDR] [--gpiochip PATH]\n"
-      << "                 [--buttons [A B]] [--api http:// or https:// URL] [--ca PEM]\n"
+      << "                 [--buttons [A B]] [--text STRING]\n"
+      << "                 [--api http:// or https:// URL] [--ca PEM]\n"
       << "\n"
       << "Defaults: --i2c /dev/i2c-1 --address 0x3d\n"
       << "Without --buttons or --api the demo draws once and exits.\n"
+      << "--text draws that string, wrapping at the right edge.\n"
       << "--buttons uses BCM 23 and BCM 22 unless two GPIO numbers are given.\n"
       << "Both buttons are active low with the internal pull-up.\n"
       << "A press on the first inverts the display. A press on the second toggles the block.\n"
-      << "--api polls a JSON document every 2 seconds. A changed document is printed,\n"
-      << "and the display inverts. https:// checks the server certificate.\n"
+      << "--api polls a JSON document every 2 seconds. A changed document is printed\n"
+      << "and drawn on the panel. https:// checks the server certificate.\n"
       << "--ca adds a PEM trust anchor.\n"
       << "On Pi 5 the header is often /dev/gpiochip4.\n";
 }
@@ -110,6 +113,8 @@ Options parse_args(int argc, char** argv) {
       options.api = arc::parse_http_url(require("--api"));
     } else if (arg == "--ca") {
       options.ca_file = require("--ca");
+    } else if (arg == "--text") {
+      options.text = require("--text");
     } else {
       throw std::invalid_argument("unknown argument: " + arg);
     }
@@ -126,18 +131,22 @@ Options parse_args(int argc, char** argv) {
   return options;
 }
 
-void draw(arc::Ssd1306& display, bool show_block) {
+void draw(arc::Ssd1306& display, bool show_block, const std::optional<std::string>& text) {
   display.clear();
-  for (int x = 0; x < arc::Ssd1306::kWidth; ++x) {
-    display.set_pixel(x, 0, true);
-    display.set_pixel(x, arc::Ssd1306::kHeight - 1, true);
-  }
-  for (int y = 0; y < arc::Ssd1306::kHeight; ++y) {
-    display.set_pixel(0, y, true);
-    display.set_pixel(arc::Ssd1306::kWidth - 1, y, true);
-  }
-  if (show_block) {
-    display.fill_rect(10, 10, 20, 16, true);
+  if (text.has_value()) {
+    display.draw_text(0, 0, *text);
+  } else {
+    for (int x = 0; x < arc::Ssd1306::kWidth; ++x) {
+      display.set_pixel(x, 0, true);
+      display.set_pixel(x, arc::Ssd1306::kHeight - 1, true);
+    }
+    for (int y = 0; y < arc::Ssd1306::kHeight; ++y) {
+      display.set_pixel(0, y, true);
+      display.set_pixel(arc::Ssd1306::kWidth - 1, y, true);
+    }
+    if (show_block) {
+      display.fill_rect(10, 10, 20, 16, true);
+    }
   }
   display.flush();
 }
@@ -152,8 +161,12 @@ int main(int argc, char** argv) {
     arc::Ssd1306 display(transport);
     display.init();
     bool show_block = true;
-    draw(display, show_block);
-    std::cout << "Drew a border and a filled block\n";
+    draw(display, show_block, options.text);
+    if (options.text.has_value()) {
+      std::cout << "Drew text\n";
+    } else {
+      std::cout << "Drew a border and a filled block\n";
+    }
 
     if (options.api.has_value()) {
       const arc::HttpRequest& endpoint = *options.api;
@@ -162,7 +175,6 @@ int main(int argc, char** argv) {
       std::signal(SIGTERM, on_signal);
       std::cout << "Polling " << (endpoint.tls ? "https://" : "http://") << endpoint.host << ":" << endpoint.port
                 << endpoint.target << " every 2 seconds (Ctrl-C to exit)\n";
-      bool inverted = false;
       std::string previous;
       while (g_stop == 0) {
         const auto started = std::chrono::steady_clock::now();
@@ -180,8 +192,9 @@ int main(int argc, char** argv) {
               previous = rendered;
               std::cout << rendered << "\n";
               std::cout.flush();
-              inverted = !inverted;
-              display.set_inverted(inverted);
+              display.clear();
+              display.draw_text(0, 0, rendered);
+              display.flush();
             }
           }
         } catch (const std::exception& ex) {
@@ -229,7 +242,7 @@ int main(int argc, char** argv) {
         display.set_inverted(inverted);
       } else {
         show_block = !show_block;
-        draw(display, show_block);
+        draw(display, show_block, options.text);
         if (inverted) {
           display.set_inverted(true);
         }

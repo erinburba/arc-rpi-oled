@@ -56,15 +56,16 @@ On the Pi the same commands also build `oled_demo`:
 ```bash
 ./build/oled_demo
 ./build/oled_demo --address 0x3c
+./build/oled_demo --text "Hello"
 ./build/oled_demo --buttons
 ./build/oled_demo --buttons 23 22
 ```
 
-Without `--buttons` or `--api` the program draws a border and a filled block, then exits. `--buttons` waits for the two switches until Ctrl-C.
+Without `--buttons` or `--api` the program draws once and exits. The default picture is a border and a filled block. `--text` draws that string instead, wrapping onto the next line at the right edge. `--buttons` waits for the two switches until Ctrl-C.
 
 ## API poll
 
-`HttpClient` sends one GET and returns the response body. `--api` repeats that every 2 seconds. The body has to be JSON. A changed document is printed, and the panel inverts. `https://` checks the server certificate against the system trust store. `--ca` adds a PEM trust anchor for a private certificate.
+`HttpClient` sends one GET and returns the response body. `--api` repeats that every 2 seconds. The body has to be JSON. A changed document is printed and drawn on the panel. `https://` checks the server certificate against the system trust store. `--ca` adds a PEM trust anchor for a private certificate.
 
 ```bash
 ./build/oled_demo --api http://127.0.0.1:8080/status
